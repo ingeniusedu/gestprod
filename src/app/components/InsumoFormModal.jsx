@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { X, Save } from 'lucide-react';
 import PropTypes from 'prop-types';
-import { Spool } from 'lucide-react'; // Assuming Spool icon is available or will be added
+import { Spool, Package } from 'lucide-react'; // Assuming Spool icon is available or will be added
 
 const initialFabricantes = ['3D Prime', 'Voolt 3D', 'National 3D'];
 const initialMateriais = ['PLA', 'PETG', 'TPU'];
 const initialTiposFilamento = ['Basic', 'Premium HT', 'Velvet'];
+const initialTiposEmbalagem = ['Saco', 'Caixa', 'Envelope'];
+const initialMateriaisEmbalagem = ['Algodão', 'Kraft', 'MDF', 'Plástico'];
 const initialCores = [
   'Amarelo', 'Areia', 'Azul', 'Azul Bebê', 'Azul Cyan', 'Azul macaron', 'Azul Tiffany',
   'Branco', 'Cappuccino', 'Caucasiano', 'Cinza Nintendo', 'Laranja', 'Laranja macaron',
@@ -23,19 +25,36 @@ const initialFormState = {
   estoqueMinimo: 0,
   cor: '',
   especificacoes: {
+    // Filament specific
     fabricante: '',
     tipoFilamento: '',
     material: '',
-    numeroSpools: 0,
+    numeroSpools: 1,
     tamanhoSpool: '1000',
-    valorPagoPorSpool: 0,
+    valorPagoPorSpool: '',
     spoolNumero: '',
     autoNumberSpool: true,
     aberto: false,
     dataAbertura: '',
-    pesoAtual: 0,
+    pesoBruto: 0, // New field for gross weight
+    pesoLiquido: 0, // New field for net weight
+    dataUltimaPesagem: '', // New field for last weighing date
     finalizadoEm: false,
     dataFinalizacao: '',
+    lote: '', // New field
+    dataFabricacao: '', // New field
+    dataCompra: '', // New field
+
+    // Embalagem specific
+    tipoEmbalagem: '',
+    materialEmbalagem: '',
+    altura: 0,
+    largura: 0,
+    profundidade: 0,
+    quantidade: 0,
+    valorTotalPago: 0, // Field for total paid value
+    valorFrete: 0, // Field for freight value
+    dataCompraEmbalagem: '',
   },
 };
 
@@ -46,6 +65,8 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
   const [showNewTipoFilamentoInput, setShowNewTipoFilamentoInput] = useState(false);
   const [showNewMaterialInput, setShowNewMaterialInput] = useState(false);
   const [showNewCorInput, setShowNewCorInput] = useState(false);
+  const [showNewTipoEmbalagemInput, setShowNewTipoEmbalagemInput] = useState(false);
+  const [showNewMaterialEmbalagemInput, setShowNewMaterialEmbalagemInput] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -54,12 +75,31 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
         setFormData({
           ...initialData,
           // Ensure nested objects are copied to avoid direct mutation
-          especificacoes: { ...initialData.especificacoes },
+          especificacoes: {
+            ...initialData.especificacoes,
+            lote: initialData.especificacoes?.lote || '',
+            dataFabricacao: initialData.especificacoes?.dataFabricacao || '',
+            dataCompra: initialData.especificacoes?.dataCompra || '',
+            pesoBruto: parseFloat(initialData.especificacoes?.pesoBruto || 0),
+            pesoLiquido: parseFloat(initialData.especificacoes?.pesoLiquido || 0),
+            altura: parseFloat(initialData.especificacoes?.altura || 0),
+            largura: parseFloat(initialData.especificacoes?.largura || 0),
+            profundidade: parseFloat(initialData.especificacoes?.profundidade || 0),
+            quantidade: parseFloat(initialData.especificacoes?.quantidade || 0),
+            valorTotalPago: parseFloat(initialData.especificacoes?.valorTotalPago || 0),
+            valorFrete: parseFloat(initialData.especificacoes?.valorFrete || 0),
+            dataCompraEmbalagem: initialData.especificacoes?.dataCompraEmbalagem || '',
+          },
         });
+        // Ensure custoPorUnidade is rounded when loading existing data
+        setFormData(prev => ({
+          ...prev,
+          custoPorUnidade: parseFloat((initialData.custoPorUnidade || 0).toFixed(2)),
+        }));
       } else {
         // When creating new, reset to initial state
         const newFormData = { ...initialFormState };
-        if (newFormData.especificacoes.autoNumberSpool) {
+        if (newFormData.tipo === 'filamento' && newFormData.especificacoes.autoNumberSpool) {
           newFormData.especificacoes.spoolNumero = `${highestExistingSpoolNumber + 1}`;
         }
         setFormData(newFormData);
@@ -69,8 +109,39 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       setShowNewTipoFilamentoInput(false);
       setShowNewMaterialInput(false);
       setShowNewCorInput(false);
+      setShowNewTipoEmbalagemInput(false);
+      setShowNewMaterialEmbalagemInput(false);
     }
   }, [isOpen, initialData, highestExistingSpoolNumber]);
+
+  // Effect to update nome for filament and embalagem types
+  useEffect(() => {
+    if (formData.tipo === 'filamento') {
+      const { fabricante, material, tipoFilamento } = formData.especificacoes;
+      const { cor } = formData;
+      const generatedName = [fabricante, material, tipoFilamento, cor]
+        .filter(Boolean) // Remove empty strings
+        .join(' ');
+      setFormData(prev => ({
+        ...prev,
+        nome: generatedName.trim(),
+      }));
+    } else if (formData.tipo === 'embalagem') {
+      const { tipoEmbalagem, materialEmbalagem, altura, largura, profundidade } = formData.especificacoes;
+      let dimensions = `${altura}x${largura}`;
+      if (profundidade > 0) {
+        dimensions += `x${profundidade}`;
+      }
+      const generatedName = [tipoEmbalagem, materialEmbalagem, dimensions]
+        .filter(Boolean)
+        .join(' ');
+      setFormData(prev => ({
+        ...prev,
+        nome: generatedName.trim(),
+      }));
+    }
+  }, [formData.tipo, formData.especificacoes.fabricante, formData.especificacoes.material, formData.especificacoes.tipoFilamento, formData.cor,
+      formData.especificacoes.tipoEmbalagem, formData.especificacoes.materialEmbalagem, formData.especificacoes.altura, formData.especificacoes.largura, formData.especificacoes.profundidade]);
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
@@ -80,29 +151,73 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
         [name]: type === 'number' ? parseFloat(value) || 0 : (type === 'checkbox' ? checked : value),
       };
 
-      if (name === 'tipo' && value === 'filamento') {
-        newState.unidade = 'gramas';
-        newState.estoqueAtual = 0;
-        newState.estoqueMinimo = 0;
+      if (name === 'tipo') {
+        if (value === 'filamento') {
+          newState.unidade = 'gramas';
+          if (!initialData) { // Only reset for new insumos
+            newState.estoqueAtual = 0;
+            newState.estoqueMinimo = 0;
+          }
+          newState.especificacoes = {
+            fabricante: '',
+            tipoFilamento: '',
+            material: '',
+            numeroSpools: 1,
+            tamanhoSpool: '1000',
+            valorPagoPorSpool: '',
+            spoolNumero: '',
+            autoNumberSpool: true,
+            aberto: false,
+            dataAbertura: '',
+            pesoBruto: 0,
+            pesoLiquido: 0,
+            dataUltimaPesagem: '',
+            finalizadoEm: false,
+            dataFinalizacao: '',
+            lote: '',
+            dataFabricacao: '',
+            dataCompra: '',
+          };
+        } else if (value === 'embalagem') {
+          newState.unidade = 'unidades';
+          if (!initialData) { // Only reset for new insumos
+            newState.estoqueAtual = 0;
+            newState.estoqueMinimo = 0;
+            newState.especificacoes = {
+              tipoEmbalagem: '',
+              materialEmbalagem: '',
+              altura: 0,
+              largura: 0,
+              profundidade: 0,
+              quantidade: 0,
+              valorTotalPago: 0,
+              valorFrete: 0,
+              dataCompraEmbalagem: '',
+            };
+          } else { // When editing, preserve existing embalagem specific data
+            newState.especificacoes = {
+              ...prev.especificacoes, // Keep existing specificacoes
+              tipoEmbalagem: prev.especificacoes.tipoEmbalagem || '',
+              materialEmbalagem: prev.especificacoes.materialEmbalagem || '',
+              altura: prev.especificacoes.altura || 0,
+              largura: prev.especificacoes.largura || 0,
+              profundidade: prev.especificacoes.profundidade || 0,
+              quantidade: prev.especificacoes.quantidade || 0,
+              valorTotalPago: prev.especificacoes.valorTotalPago || 0,
+              valorFrete: prev.especificacoes.valorFrete || 0,
+              dataCompraEmbalagem: prev.especificacoes.dataCompraEmbalagem || '',
+            };
+          }
+        } else { // For 'material', 'tempo', 'outros'
+          newState.especificacoes = {};
+          newState.unidade = '';
+          if (!initialData) { // Only reset for new insumos
+            newState.estoqueAtual = 0;
+            newState.estoqueMinimo = 0;
+          }
+        }
+        // Clear nome when changing type, it will be regenerated by useEffect
         newState.nome = '';
-        newState.especificacoes = {
-          fabricante: '',
-          tipoFilamento: '',
-          material: '',
-          numeroSpools: 0,
-          tamanhoSpool: '1000',
-          valorPagoPorSpool: 0, // New field
-          spoolNumero: '', // New field for spool number
-          autoNumberSpool: true, // Default to true for new insumos
-          aberto: false,
-          dataAbertura: '',
-          pesoAtual: 0,
-          finalizadoEm: false,
-          dataFinalizacao: '',
-        };
-      } else if (name === 'tipo' && prev.tipo === 'filamento' && value !== 'filamento') {
-        newState.especificacoes = {};
-        newState.unidade = '';
       }
       return newState;
     });
@@ -133,6 +248,22 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       }
     }
 
+    if (name === 'tipoEmbalagem') {
+      setShowNewTipoEmbalagemInput(value === 'addNew');
+      if (value === 'addNew') {
+        setFormData(prev => ({ ...prev, especificacoes: { ...prev.especificacoes, tipoEmbalagem: '' } }));
+        return;
+      }
+    }
+
+    if (name === 'materialEmbalagem') {
+      setShowNewMaterialEmbalagemInput(value === 'addNew');
+      if (value === 'addNew') {
+        setFormData(prev => ({ ...prev, especificacoes: { ...prev.especificacoes, materialEmbalagem: '' } }));
+        return;
+      }
+    }
+
     if (name === 'autoNumberSpool') {
       setFormData(prev => ({
         ...prev,
@@ -146,13 +277,27 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
     }
     
     setFormData(prev => {
-      const newEspecificacoes = {
+      let newEspecificacoes = {
         ...prev.especificacoes,
         [name]: type === 'number' ? parseFloat(value) || 0 : (type === 'checkbox' ? checked : value),
       };
 
-      // Calculate custoPorUnidade based on valorPagoPorSpool and tamanhoSpool
-      if (name === 'valorPagoPorSpool' || name === 'tamanhoSpool') {
+      // Handle pesoBruto and pesoLiquido calculation
+      if (name === 'pesoBruto' && newEspecificacoes.aberto) {
+        newEspecificacoes.pesoLiquido = (parseFloat(value) || 0) - 130; // Calculate net weight
+      } else if (name === 'aberto') {
+        if (checked) {
+          // When 'aberto' is checked, calculate pesoLiquido based on current pesoBruto
+          newEspecificacoes.pesoLiquido = (parseFloat(newEspecificacoes.pesoBruto) || 0) - 130;
+        } else {
+          // When 'aberto' is unchecked, reset pesoBruto and pesoLiquido
+          newEspecificacoes.pesoBruto = 0;
+          newEspecificacoes.pesoLiquido = 0;
+        }
+      }
+
+      // Calculate custoPorUnidade for filaments
+      if (formData.tipo === 'filamento' && (name === 'valorPagoPorSpool' || name === 'tamanhoSpool')) {
         const valorPago = newEspecificacoes.valorPagoPorSpool || 0;
         const tamanho = parseFloat(newEspecificacoes.tamanhoSpool) || 1; // Avoid division by zero
         if (valorPago > 0 && tamanho > 0) {
@@ -163,6 +308,27 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
           };
         }
       }
+
+      // Calculate custoPorUnidade for embalagens
+      if (formData.tipo === 'embalagem' && (name === 'valorTotalPago' || name === 'quantidade' || name === 'valorFrete')) {
+        const valorTotalPago = parseFloat(newEspecificacoes.valorTotalPago || 0);
+        const quantidade = parseFloat(newEspecificacoes.quantidade || 0);
+        const valorFrete = parseFloat(newEspecificacoes.valorFrete || 0);
+        if (quantidade > 0) {
+          return {
+            ...prev,
+            especificacoes: newEspecificacoes,
+            custoPorUnidade: parseFloat(((valorTotalPago + valorFrete) / quantidade).toFixed(2)), // Cost per unit, rounded to 2 decimal places
+          };
+        } else {
+          return {
+            ...prev,
+            especificacoes: newEspecificacoes,
+            custoPorUnidade: 0, // Reset if quantity is zero
+          };
+        }
+      }
+
       return {
         ...prev,
         especificacoes: newEspecificacoes,
@@ -182,14 +348,6 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
   const validateForm = () => {
     let newErrors = {};
 
-    if (formData.tipo !== 'filamento') {
-      if (!formData.nome.trim()) newErrors.nome = 'Nome é obrigatório.';
-      if (!formData.unidade.trim()) newErrors.unidade = 'Unidade é obrigatória.';
-      if (formData.custoPorUnidade <= 0) newErrors.custoPorUnidade = 'Custo por unidade deve ser maior que zero.';
-      if (formData.estoqueAtual < 0) newErrors.estoqueAtual = 'Estoque atual não pode ser negativo.';
-      if (formData.estoqueMinimo < 0) newErrors.estoqueMinimo = 'Estoque mínimo não pode ser negativo.';
-    }
-
     if (formData.tipo === 'filamento') {
       if (!formData.cor.trim()) newErrors.cor = 'Cor é obrigatória para filamentos.';
       if (!formData.especificacoes.fabricante.trim()) newErrors.fabricante = 'Fabricante é obrigatório para filamentos.';
@@ -205,8 +363,28 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       }
 
       if (formData.especificacoes.aberto && !formData.especificacoes.dataAbertura) newErrors.dataAbertura = 'Data de Abertura é obrigatória.';
-      if (formData.especificacoes.aberto && formData.especificacoes.pesoAtual <= 0) newErrors.pesoAtual = 'Peso Atual deve ser maior que zero.';
+      if (formData.especificacoes.aberto && formData.especificacoes.pesoBruto <= 0) newErrors.pesoBruto = 'Peso Bruto deve ser maior que zero.';
+      if (formData.especificacoes.aberto && !formData.especificacoes.dataUltimaPesagem) newErrors.dataUltimaPesagem = 'Data da Última Pesagem é obrigatória.';
       if (formData.especificacoes.finalizadoEm && !formData.especificacoes.dataFinalizacao) newErrors.dataFinalizacao = 'Data de Finalização é obrigatória.';
+      if (formData.especificacoes.lote && !formData.especificacoes.lote.trim()) newErrors.lote = 'Lote é obrigatório se preenchido.';
+      if (formData.especificacoes.dataFabricacao && !formData.especificacoes.dataFabricacao.trim()) newErrors.dataFabricacao = 'Data de Fabricação é obrigatória se preenchida.';
+      if (formData.especificacoes.dataCompra && !formData.especificacoes.dataCompra.trim()) newErrors.dataCompra = 'Data de Compra é obrigatória se preenchida.';
+    } else if (formData.tipo === 'embalagem') {
+      if (!formData.especificacoes.tipoEmbalagem.trim()) newErrors.tipoEmbalagem = 'Tipo de Embalagem é obrigatório.';
+      if (!formData.especificacoes.materialEmbalagem.trim()) newErrors.materialEmbalagem = 'Material da Embalagem é obrigatório.';
+      if (formData.especificacoes.altura <= 0) newErrors.altura = 'Altura é obrigatória e deve ser maior que zero.';
+      if (formData.especificacoes.largura <= 0) newErrors.largura = 'Largura é obrigatória e deve ser maior que zero.';
+      if (formData.especificacoes.quantidade <= 0) newErrors.quantidade = 'Quantidade é obrigatória e deve ser maior que zero.';
+      if (formData.especificacoes.valorTotalPago <= 0) newErrors.valorTotalPago = 'Valor Total Pago deve ser maior que zero.';
+      if (!formData.especificacoes.dataCompraEmbalagem.trim()) newErrors.dataCompraEmbalagem = 'Data da Compra é obrigatória.';
+      if (formData.estoqueAtual < 0) newErrors.estoqueAtual = 'Estoque atual não pode ser negativo.';
+      if (formData.estoqueMinimo < 0) newErrors.estoqueMinimo = 'Estoque mínimo não pode ser negativo.';
+    } else { // For 'material', 'tempo', 'outros'
+      if (!formData.nome.trim()) newErrors.nome = 'Nome é obrigatório.';
+      if (!formData.unidade.trim()) newErrors.unidade = 'Unidade é obrigatória.';
+      if (formData.custoPorUnidade <= 0) newErrors.custoPorUnidade = 'Custo por unidade deve ser maior que zero.';
+      if (formData.estoqueAtual < 0) newErrors.estoqueAtual = 'Estoque atual não pode ser negativo.';
+      if (formData.estoqueMinimo < 0) newErrors.estoqueMinimo = 'Estoque mínimo não pode ser negativo.';
     }
 
     setErrors(newErrors);
@@ -265,6 +443,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
             >
               <option value="filamento">Filamento</option>
               <option value="material">Material</option>
+              <option value="embalagem">Embalagem</option>
               <option value="tempo">Tempo</option>
               <option value="outros">Outros</option>
             </select>
@@ -543,7 +722,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
                   type="number"
                   name="valorPagoPorSpool"
                   id="valorPagoPorSpool"
-                  value={formData.especificacoes.valorPagoPorSpool || 0}
+                  value={formData.especificacoes.valorPagoPorSpool}
                   onChange={handleEspecificacoesChange}
                   min="0"
                   step="0.01"
@@ -581,21 +760,83 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
                       {errors.dataAbertura && <p className="mt-1 text-sm text-red-600">{errors.dataAbertura}</p>}
                     </div>
                     <div>
-                      <label htmlFor="pesoAtual" className="block text-sm font-medium text-gray-700">Peso Atual (g)</label>
+                      <label htmlFor="pesoBruto" className="block text-sm font-medium text-gray-700">Peso Bruto (g)</label>
                       <input
                         type="number"
-                        name="pesoAtual"
-                        id="pesoAtual"
-                        value={formData.especificacoes.pesoAtual || 0}
+                        name="pesoBruto"
+                        id="pesoBruto"
+                        value={formData.especificacoes.pesoBruto || 0}
                         onChange={handleEspecificacoesChange}
                         min="0"
                         step="0.01"
-                        className={`mt-1 block w-full border ${errors.pesoAtual ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                        className={`mt-1 block w-full border ${errors.pesoBruto ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
                       />
-                      {errors.pesoAtual && <p className="mt-1 text-sm text-red-600">{errors.pesoAtual}</p>}
+                      {errors.pesoBruto && <p className="mt-1 text-sm text-red-600">{errors.pesoBruto}</p>}
+                    </div>
+                    <div>
+                      <label htmlFor="pesoLiquido" className="block text-sm font-medium text-gray-700">Peso Líquido (g)</label>
+                      <input
+                        type="number"
+                        name="pesoLiquido"
+                        id="pesoLiquido"
+                        value={formData.especificacoes.pesoLiquido || 0}
+                        readOnly
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 bg-gray-100 cursor-not-allowed"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="dataUltimaPesagem" className="block text-sm font-medium text-gray-700">Data da Última Pesagem</label>
+                      <input
+                        type="date"
+                        name="dataUltimaPesagem"
+                        id="dataUltimaPesagem"
+                        value={formData.especificacoes.dataUltimaPesagem || ''}
+                        onChange={handleEspecificacoesChange}
+                        className={`mt-1 block w-full border ${errors.dataUltimaPesagem ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                      />
+                      {errors.dataUltimaPesagem && <p className="mt-1 text-sm text-red-600">{errors.dataUltimaPesagem}</p>}
                     </div>
                   </>
                 )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label htmlFor="lote" className="block text-sm font-medium text-gray-700">Lote</label>
+                  <input
+                    type="text"
+                    name="lote"
+                    id="lote"
+                    value={formData.especificacoes.lote || ''}
+                    onChange={handleEspecificacoesChange}
+                    className={`mt-1 block w-full border ${errors.lote ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                  />
+                  {errors.lote && <p className="mt-1 text-sm text-red-600">{errors.lote}</p>}
+                </div>
+                <div>
+                  <label htmlFor="dataFabricacao" className="block text-sm font-medium text-gray-700">Data de Fabricação</label>
+                  <input
+                    type="date"
+                    name="dataFabricacao"
+                    id="dataFabricacao"
+                    value={formData.especificacoes.dataFabricacao || ''}
+                    onChange={handleEspecificacoesChange}
+                    className={`mt-1 block w-full border ${errors.dataFabricacao ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                  />
+                  {errors.dataFabricacao && <p className="mt-1 text-sm text-red-600">{errors.dataFabricacao}</p>}
+                </div>
+                <div>
+                  <label htmlFor="dataCompra" className="block text-sm font-medium text-gray-700">Data de Compra</label>
+                  <input
+                    type="date"
+                    name="dataCompra"
+                    id="dataCompra"
+                    value={formData.especificacoes.dataCompra || ''}
+                    onChange={handleEspecificacoesChange}
+                    className={`mt-1 block w-full border ${errors.dataCompra ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                  />
+                  {errors.dataCompra && <p className="mt-1 text-sm text-red-600">{errors.dataCompra}</p>}
+                </div>
               </div>
 
               <div className="flex items-center">
@@ -656,6 +897,159 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
                         onChange={handleEspecificacoesChange}
                         className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm focus:ring-blue-500 focus:border-blue-500"
                       />
+                    </div>
+                  </>
+                )}
+                {formData.tipo === 'embalagem' && (
+                  <>
+                    <div>
+                      <label htmlFor="tipoEmbalagem" className="block text-sm font-medium text-gray-700">Tipo de Embalagem</label>
+                      <select
+                        name="tipoEmbalagem"
+                        id="tipoEmbalagem"
+                        value={formData.especificacoes.tipoEmbalagem || ''}
+                        onChange={handleEspecificacoesChange}
+                        className={`mt-1 block w-full border ${errors.tipoEmbalagem ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                      >
+                        <option value="">Selecione o Tipo</option>
+                        {initialTiposEmbalagem.map(option => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                        <option value="addNew">Adicionar Novo...</option>
+                      </select>
+                      {showNewTipoEmbalagemInput && (
+                        <input
+                          type="text"
+                          name="tipoEmbalagem"
+                          value={formData.especificacoes.tipoEmbalagem || ''}
+                          onChange={handleEspecificacoesChange}
+                          placeholder="Novo Tipo de Embalagem"
+                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm focus:ring-blue-500 focus:border-blue-500"
+                        />
+                      )}
+                      {errors.tipoEmbalagem && <p className="mt-1 text-sm text-red-600">{errors.tipoEmbalagem}</p>}
+                    </div>
+                    <div>
+                      <label htmlFor="materialEmbalagem" className="block text-sm font-medium text-gray-700">Material da Embalagem</label>
+                      <select
+                        name="materialEmbalagem"
+                        id="materialEmbalagem"
+                        value={formData.especificacoes.materialEmbalagem || ''}
+                        onChange={handleEspecificacoesChange}
+                        className={`mt-1 block w-full border ${errors.materialEmbalagem ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                      >
+                        <option value="">Selecione o Material</option>
+                        {initialMateriaisEmbalagem.map(option => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                        <option value="addNew">Adicionar Novo...</option>
+                      </select>
+                      {showNewMaterialEmbalagemInput && (
+                        <input
+                          type="text"
+                          name="materialEmbalagem"
+                          value={formData.especificacoes.materialEmbalagem || ''}
+                          onChange={handleEspecificacoesChange}
+                          placeholder="Novo Material de Embalagem"
+                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 text-sm focus:ring-blue-500 focus:border-blue-500"
+                        />
+                      )}
+                      {errors.materialEmbalagem && <p className="mt-1 text-sm text-red-600">{errors.materialEmbalagem}</p>}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 col-span-2">
+                      <div>
+                        <label htmlFor="altura" className="block text-sm font-medium text-gray-700">Altura (cm)</label>
+                        <input
+                          type="number"
+                          name="altura"
+                          id="altura"
+                          value={formData.especificacoes.altura || 0}
+                          onChange={handleEspecificacoesChange}
+                          min="0"
+                          step="0.01"
+                          className={`mt-1 block w-full border ${errors.altura ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                        />
+                        {errors.altura && <p className="mt-1 text-sm text-red-600">{errors.altura}</p>}
+                      </div>
+                      <div>
+                        <label htmlFor="largura" className="block text-sm font-medium text-gray-700">Largura (cm)</label>
+                        <input
+                          type="number"
+                          name="largura"
+                          id="largura"
+                          value={formData.especificacoes.largura || 0}
+                          onChange={handleEspecificacoesChange}
+                          min="0"
+                          step="0.01"
+                          className={`mt-1 block w-full border ${errors.largura ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                        />
+                        {errors.largura && <p className="mt-1 text-sm text-red-600">{errors.largura}</p>}
+                      </div>
+                      <div>
+                        <label htmlFor="profundidade" className="block text-sm font-medium text-gray-700">Profundidade (cm) (Opcional)</label>
+                        <input
+                          type="number"
+                          name="profundidade"
+                          id="profundidade"
+                          value={formData.especificacoes.profundidade || 0}
+                          onChange={handleEspecificacoesChange}
+                          min="0"
+                          step="0.01"
+                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label htmlFor="quantidade" className="block text-sm font-medium text-gray-700">Quantidade</label>
+                      <input
+                        type="number"
+                        name="quantidade"
+                        id="quantidade"
+                        value={formData.especificacoes.quantidade || 0}
+                        onChange={handleEspecificacoesChange}
+                        min="0"
+                        className={`mt-1 block w-full border ${errors.quantidade ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                      />
+                      {errors.quantidade && <p className="mt-1 text-sm text-red-600">{errors.quantidade}</p>}
+                    </div>
+                    <div>
+                      <label htmlFor="valorTotalPago" className="block text-sm font-medium text-gray-700">Valor Total Pago (R$)</label>
+                      <input
+                        type="number"
+                        name="valorTotalPago"
+                        id="valorTotalPago"
+                        value={formData.especificacoes.valorTotalPago || 0}
+                        onChange={handleEspecificacoesChange}
+                        min="0"
+                        step="0.01"
+                        className={`mt-1 block w-full border ${errors.valorTotalPago ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                      />
+                      {errors.valorTotalPago && <p className="mt-1 text-sm text-red-600">{errors.valorTotalPago}</p>}
+                    </div>
+                    <div>
+                      <label htmlFor="valorFrete" className="block text-sm font-medium text-gray-700">Valor do Frete (R$)</label>
+                      <input
+                        type="number"
+                        name="valorFrete"
+                        id="valorFrete"
+                        value={formData.especificacoes.valorFrete || 0}
+                        onChange={handleEspecificacoesChange}
+                        min="0"
+                        step="0.01"
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="dataCompraEmbalagem" className="block text-sm font-medium text-gray-700">Data da Compra</label>
+                      <input
+                        type="date"
+                        name="dataCompraEmbalagem"
+                        id="dataCompraEmbalagem"
+                        value={formData.especificacoes.dataCompraEmbalagem || ''}
+                        onChange={handleEspecificacoesChange}
+                        className={`mt-1 block w-full border ${errors.dataCompraEmbalagem ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                      />
+                      {errors.dataCompraEmbalagem && <p className="mt-1 text-sm text-red-600">{errors.dataCompraEmbalagem}</p>}
                     </div>
                   </>
                 )}

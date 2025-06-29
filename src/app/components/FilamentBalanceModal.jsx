@@ -2,14 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { X, ChevronLeft, ChevronRight, CheckCircle } from 'lucide-react';
 
 export default function FilamentBalanceModal({ isOpen, onClose, filaments, currentIndex, onUpdate, onNext, onSkip, showConfirmation }) {
-  const [currentWeight, setCurrentWeight] = useState('');
+  const [currentGrossWeight, setCurrentGrossWeight] = useState(''); // Renamed to currentGrossWeight
   const [isEditing, setIsEditing] = useState(false);
 
   const currentSpool = filaments[currentIndex];
 
   useEffect(() => {
     if (currentSpool) {
-      setCurrentWeight(currentSpool.estoqueAtual ? parseFloat(currentSpool.estoqueAtual).toFixed(2) : '');
+      // If spool is open, use pesoBruto for input, otherwise use estoqueAtual (which is net for closed)
+      setCurrentGrossWeight(currentSpool.especificacoes?.aberto && currentSpool.especificacoes?.pesoBruto != null
+        ? parseFloat(currentSpool.especificacoes.pesoBruto).toFixed(2)
+        : (currentSpool.estoqueAtual ? parseFloat(currentSpool.estoqueAtual).toFixed(2) : '')
+      );
       setIsEditing(false); // Reset editing state when spool changes
     }
   }, [currentSpool]);
@@ -17,8 +21,8 @@ export default function FilamentBalanceModal({ isOpen, onClose, filaments, curre
   if (!isOpen) return null;
 
   const handleUpdateClick = () => {
-    if (currentSpool && currentWeight !== '') {
-      onUpdate(currentSpool.id, parseFloat(currentWeight));
+    if (currentSpool && currentGrossWeight !== '') {
+      onUpdate(currentSpool.id, parseFloat(currentGrossWeight)); // Pass gross weight
     }
     setIsEditing(false);
     onNext();
@@ -85,19 +89,22 @@ export default function FilamentBalanceModal({ isOpen, onClose, filaments, curre
                     <div>
                       <label className="block text-sm font-medium text-gray-700">Peso Atual Registrado (gramas)</label>
                       <p className="mt-1 text-lg font-semibold text-gray-900">
-                        {parseFloat(currentSpool.estoqueAtual || 0).toFixed(2)} g
+                        {currentSpool.especificacoes?.aberto
+                          ? `${parseFloat(currentSpool.especificacoes.pesoLiquido || 0).toFixed(2)} g (Líquido)`
+                          : `${parseFloat(currentSpool.estoqueAtual || 0).toFixed(2)} g`
+                        }
                       </p>
                     </div>
                     <div>
-                      <label htmlFor="newWeight" className="block text-sm font-medium text-gray-700">
-                        Novo Peso (gramas)
+                      <label htmlFor="newGrossWeight" className="block text-sm font-medium text-gray-700">
+                        Novo Peso {currentSpool.especificacoes?.aberto ? 'Bruto' : ''} (gramas)
                       </label>
                       <input
                         type="number"
-                        id="newWeight"
-                        name="newWeight"
-                        value={currentWeight}
-                        onChange={(e) => setCurrentWeight(e.target.value)}
+                        id="newGrossWeight"
+                        name="newGrossWeight"
+                        value={currentGrossWeight}
+                        onChange={(e) => setCurrentGrossWeight(e.target.value)}
                         className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                         placeholder="Insira o novo peso"
                         step="0.01"
@@ -119,7 +126,7 @@ export default function FilamentBalanceModal({ isOpen, onClose, filaments, curre
                       </button>
                       <button
                         onClick={handleUpdateClick}
-                        disabled={currentWeight === '' || isNaN(parseFloat(currentWeight))}
+                        disabled={currentGrossWeight === '' || isNaN(parseFloat(currentGrossWeight))}
                         className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Atualizar e Próximo

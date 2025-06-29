@@ -1,51 +1,87 @@
-import { useState } from 'react';
+"use client";
+
+import { useState, useEffect } from 'react';
 import { Plus, Search, Filter, Eye, Edit, Trash2 } from 'lucide-react';
+import PedidoFormModal from '../components/PedidoFormModal';
+import ProductionOrderModal from '../components/ProductionOrderModal';
+import { db } from '../services/firebase';
+import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 
 export default function Pedidos() {
+  const [pedidos, setPedidos] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('todos');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [currentPedido, setCurrentPedido] = useState(null);
+  const [isProductionOrderModalOpen, setIsProductionOrderModalOpen] = useState(false);
+  const [productionOrderData, setProductionOrderData] = useState(null);
 
-  // Dados simulados - será substituído por dados reais do Firebase
-  const pedidos = [
-    {
-      id: '1',
-      numero: '2025-001',
-      comprador: 'Escola Municipal ABC',
-      status: 'em_producao',
-      dataCriacao: new Date('2025-01-15'),
-      dataPrevisao: new Date('2025-01-25'),
-      custos: { total: 450.00 },
-      produtos: [
-        { tipo: 'kit', nome: 'Kit Sistema Solar', quantidade: 2 }
-      ]
-    },
-    {
-      id: '2',
-      numero: '2025-002',
-      comprador: 'Colégio XYZ',
-      status: 'aguardando',
-      dataCriacao: new Date('2025-01-18'),
-      dataPrevisao: new Date('2025-01-28'),
-      custos: { total: 320.50 },
-      produtos: [
-        { tipo: 'modelo', nome: 'Modelo Átomo', quantidade: 5 }
-      ]
-    },
-    {
-      id: '3',
-      numero: '2024-158',
-      comprador: 'Instituto DEF',
-      status: 'concluido',
-      dataCriacao: new Date('2024-12-20'),
-      dataPrevisao: new Date('2024-12-30'),
-      dataConclusao: new Date('2024-12-28'),
-      custos: { total: 680.75 },
-      produtos: [
-        { tipo: 'kit', nome: 'Kit Anatomia', quantidade: 1 },
-        { tipo: 'peca', nome: 'Peça Coração', quantidade: 3 }
-      ]
+  useEffect(() => {
+    fetchPedidos();
+  }, []);
+
+  const handleGenerateProductionOrder = (pedido) => {
+    // Here we will process the pedido to generate the production order data
+    // For now, let's just pass the pedido directly
+    setProductionOrderData(pedido);
+    setIsProductionOrderModalOpen(true);
+  };
+
+  const fetchPedidos = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'pedidos'));
+      const pedidosList = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        dataCriacao: doc.data().dataCriacao.toDate(),
+        dataPrevisao: doc.data().dataPrevisao.toDate(),
+        dataConclusao: doc.data().dataConclusao ? doc.data().dataConclusao.toDate() : null,
+      }));
+      setPedidos(pedidosList);
+    } catch (error) {
+      console.error("Error fetching pedidos: ", error);
     }
-  ];
+  };
+
+  const handleSavePedido = async (pedidoData) => {
+    try {
+      if (pedidoData.id) {
+        // Update existing pedido
+        const { id, ...dataToUpdate } = pedidoData;
+        await updateDoc(doc(db, 'pedidos', id), dataToUpdate);
+        console.log("Pedido updated successfully!");
+      } else {
+        // Add new pedido
+        await addDoc(collection(db, 'pedidos'), pedidoData);
+        console.log("Pedido added successfully!");
+      }
+      fetchPedidos(); // Refresh the list
+    } catch (error) {
+      console.error("Error saving pedido: ", error);
+    }
+  };
+
+  const handleDeletePedido = async (id) => {
+    if (window.confirm("Tem certeza que deseja excluir este pedido?")) {
+      try {
+        await deleteDoc(doc(db, 'pedidos', id));
+        console.log("Pedido deleted successfully!");
+        fetchPedidos(); // Refresh the list
+      } catch (error) {
+        console.error("Error deleting pedido: ", error);
+      }
+    }
+  };
+
+  const handleNewPedido = () => {
+    setCurrentPedido(null);
+    setIsModalOpen(true);
+  };
+
+  const handleEditPedido = (pedido) => {
+    setCurrentPedido(pedido);
+    setIsModalOpen(true);
+  };
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -55,12 +91,15 @@ export default function Pedidos() {
         return 'bg-blue-100 text-blue-800';
       case 'concluido':
         return 'bg-green-100 text-green-800';
+      case 'cancelado':
+        return 'bg-red-100 text-red-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
   };
 
   const formatDate = (date) => {
+    if (!date) return '';
     return date.toLocaleDateString('pt-BR');
   };
 
@@ -81,7 +120,10 @@ export default function Pedidos() {
             Gerencie todos os pedidos de produção
           </p>
         </div>
-        <button className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+        <button
+          onClick={handleNewPedido}
+          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+        >
           <Plus className="h-4 w-4 mr-2" />
           Novo Pedido
         </button>
@@ -115,6 +157,7 @@ export default function Pedidos() {
               <option value="aguardando">Aguardando</option>
               <option value="em_producao">Em Produção</option>
               <option value="concluido">Concluído</option>
+              <option value="cancelado">Cancelado</option>
             </select>
           </div>
 
@@ -194,14 +237,27 @@ export default function Pedidos() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex space-x-2">
-                        <button className="text-blue-600 hover:text-blue-900">
-                          <Eye className="h-4 w-4" />
+                        <button
+                          onClick={() => handleGenerateProductionOrder(pedido)}
+                          className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+                          title="Gerar Ordem de Produção"
+                        >
+                          <Eye className="h-3 w-3 mr-1" />
+                          Ordem
                         </button>
-                        <button className="text-gray-600 hover:text-gray-900">
-                          <Edit className="h-4 w-4" />
+                        <button
+                          onClick={() => handleEditPedido(pedido)}
+                          className="inline-flex items-center px-3 py-1 border border-gray-300 rounded-md shadow-sm text-xs font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                          title="Editar Pedido"
+                        >
+                          <Edit className="h-3 w-3" />
                         </button>
-                        <button className="text-red-600 hover:text-red-900">
-                          <Trash2 className="h-4 w-4" />
+                        <button
+                          onClick={() => handleDeletePedido(pedido.id)}
+                          className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                          title="Excluir Pedido"
+                        >
+                          <Trash2 className="h-3 w-3" />
                         </button>
                       </div>
                     </td>
@@ -226,15 +282,15 @@ export default function Pedidos() {
       {/* Resumo */}
       <div className="bg-white shadow rounded-lg p-6">
         <h3 className="text-lg font-medium text-gray-900 mb-4">Resumo</h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
           <div className="text-center">
-            <div className="text-2xl font-bold text-blue-600">
+            <div className="text-2xl font-bold text-yellow-600">
               {pedidos.filter(p => p.status === 'aguardando').length}
             </div>
             <div className="text-sm text-gray-500">Aguardando</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-bold text-yellow-600">
+            <div className="text-2xl font-bold text-blue-600">
               {pedidos.filter(p => p.status === 'em_producao').length}
             </div>
             <div className="text-sm text-gray-500">Em Produção</div>
@@ -245,8 +301,27 @@ export default function Pedidos() {
             </div>
             <div className="text-sm text-gray-500">Concluídos</div>
           </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-red-600">
+              {pedidos.filter(p => p.status === 'cancelado').length}
+            </div>
+            <div className="text-sm text-gray-500">Cancelados</div>
+          </div>
         </div>
       </div>
+
+      <PedidoFormModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSave={handleSavePedido}
+        initialData={currentPedido}
+      />
+
+      <ProductionOrderModal
+        isOpen={isProductionOrderModalOpen}
+        onClose={() => setIsProductionOrderModalOpen(false)}
+        orderData={productionOrderData}
+      />
     </div>
   );
 }

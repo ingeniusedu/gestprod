@@ -11,12 +11,14 @@ import {
   Warehouse,
   Menu,
   X,
-  User
+  User,
+  Printer // Import Printer icon
 } from 'lucide-react';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: Home },
   { name: 'Pedidos', href: '/pedidos', icon: ShoppingCart },
+  { name: 'Produção', href: '/producao', icon: Printer }, // Adicionado link para Produção
   { name: 'Produtos', href: '/produtos', icon: Package },
   { name: 'Estoque', href: '/estoque', icon: Warehouse },
   { name: 'Relatórios', href: '/relatorios', icon: BarChart3 },
