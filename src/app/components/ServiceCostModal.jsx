@@ -49,7 +49,7 @@ const ServiceCostModal = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex justify-center items-center">
+    <div className="fixed inset-0 backdrop-blur-sm overflow-y-auto h-full w-full z-50 flex justify-center items-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)' }}>
       <div className="relative bg-white rounded-lg shadow-xl p-8 w-full max-w-md mx-4">
         <div className="flex justify-between items-center pb-4 border-b border-gray-200">
           <h3 className="text-xl font-semibold text-gray-900">

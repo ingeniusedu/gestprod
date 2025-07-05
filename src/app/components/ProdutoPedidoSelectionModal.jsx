@@ -115,7 +115,7 @@ const ProdutoPedidoSelectionModal = ({ isOpen, onClose, onSelectItems, initialSe
   const { selectedItems, searchResultItems } = getFilteredItems();
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 h-full w-full z-50 flex justify-center items-center">
+    <div className="fixed inset-0 backdrop-blur-sm h-full w-full z-50 flex justify-center items-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)' }}>
       <div className="relative bg-white rounded-lg shadow-xl p-8 w-full max-w-3xl mx-4 flex flex-col max-h-[90vh]">
         <div className="flex justify-between items-center pb-4 border-b border-gray-200 flex-shrink-0">
           <h3 className="text-xl font-semibold text-gray-900">

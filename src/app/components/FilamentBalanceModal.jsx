@@ -40,7 +40,7 @@ export default function FilamentBalanceModal({ isOpen, onClose, filaments, curre
   };
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center p-4 z-50" style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)' }}>
       <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-auto p-6 relative">
         <button
           onClick={handleClose}

@@ -3,18 +3,44 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/firebase';
 import { collection, getDocs, doc, getDoc, updateDoc } from 'firebase/firestore';
-import { Printer, Hourglass, Package, CheckCircle, XCircle, Play, Pause, FastForward } from 'lucide-react';
+import { Hourglass, Package, CheckCircle, XCircle, Play, Pause, FastForward, Trash2, Spool } from 'lucide-react';
 
 export default function Producao() {
   const [pedidos, setPedidos] = useState([]);
   const [activeTab, setActiveTab] = useState('aguardando'); // 'aguardando', 'em_producao', 'produzidos', 'montados'
   const [filamentColors, setFilamentColors] = useState({});
   const [displayGroups, setDisplayGroups] = useState([]);
+  const [availableFilaments, setAvailableFilaments] = useState([]);
+  const [availableProducts, setAvailableProducts] = useState([]); // New state for available products
 
   useEffect(() => {
-    fetchFilamentColors();
-    fetchPedidos();
+    const initializeData = async () => {
+      fetchFilamentColors();
+      const filaments = await fetchAvailableFilaments();
+      const products = await fetchAvailableProducts(); // Fetch products and wait for them
+      fetchPedidos(filaments, products); // Pass both filaments and products to fetchPedidos
+    };
+    initializeData();
   }, []);
+
+  // New useEffect to derive displayGroups from pedidos
+  useEffect(() => {
+    const allGroups = [];
+    pedidos.forEach(pedido => {
+      pedido.productionGroups.forEach(group => {
+        allGroups.push({
+          ...group,
+          pedidoId: pedido.id,
+          pedidoNumero: pedido.numero,
+          pedidoComprador: pedido.comprador,
+          pedidoTotalTempoImpressao: pedido.totalTempoImpressao,
+          pedidoTotalConsumoFilamento: pedido.totalConsumoFilamento,
+          pedidoTotalTempoMontagem: pedido.totalTempoMontagem,
+        });
+      });
+    });
+    setDisplayGroups(allGroups);
+  }, [pedidos]); // Dependency on pedidos
 
   const fetchFilamentColors = async () => {
     // This color map is copied from backend/src/app/estoque/page.jsx
@@ -33,12 +59,96 @@ export default function Producao() {
     setFilamentColors(colorMap);
   };
 
-  const fetchPecaDetails = async (pecaId) => {
+  const fetchAvailableFilaments = async () => {
+    try {
+      const insumosCollection = collection(db, 'insumos');
+      const insumoSnapshot = await getDocs(insumosCollection);
+      const filamentsList = insumoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(i => i.tipo === 'filamento');
+      setAvailableFilaments(filamentsList);
+      return filamentsList; // Return the fetched list
+    } catch (error) {
+      console.error("Error fetching available filaments: ", error);
+      return [];
+    }
+  };
+
+  const fetchAvailableProducts = async () => {
+    try {
+      const produtosCollection = collection(db, 'produtos');
+      const produtoSnapshot = await getDocs(produtosCollection);
+      const produtosList = produtoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAvailableProducts(produtosList);
+      return produtosList;
+    } catch (error) {
+      console.error("Error fetching available products: ", error);
+      return [];
+    }
+  };
+
+  const fetchPecaDetails = async (pecaId, filamentsData, productsData) => {
     try {
       const pecaDocRef = doc(db, 'pecas', pecaId);
       const pecaDocSnap = await getDoc(pecaDocRef);
       if (pecaDocSnap.exists()) {
-        return { id: pecaDocSnap.id, ...pecaDocSnap.data() };
+        const pecaData = { id: pecaDocSnap.id, ...pecaDocSnap.data() };
+        
+        let totalConsumoFilamento = 0;
+        let mainFilamentColor = 'N/A'; // This might need more complex logic for composed pieces with multiple colors
+        let totalTempoImpressaoPeca = 0; // New variable to aggregate time for composed pieces
+
+        if (pecaData.isPecaComposta && pecaData.gruposImpressao && pecaData.gruposImpressao.length > 0) {
+          // For composed pieces, aggregate from gruposImpressao
+          pecaData.gruposImpressao.forEach(grupo => {
+            totalTempoImpressaoPeca += (parseFloat(grupo.tempoImpressaoGrupo) || 0);
+            (grupo.filamentos || []).forEach(filamentoRef => {
+              const filament = filamentsData.find(f => f.grupoFilamento === filamentoRef.grupoFilamento); // Match by grupoFilamento
+              if (filament) {
+                totalConsumoFilamento += (parseFloat(filamentoRef.quantidade) || 0);
+                if (mainFilamentColor === 'N/A' && filament.cor) { // Take the color of the first filament found
+                  mainFilamentColor = filament.cor;
+                }
+              }
+            });
+          });
+        } else {
+          // For simple pieces, use existing insumos logic
+          const pecaInsumos = pecaData.insumos || [];
+          if (pecaInsumos.length > 0 && filamentsData.length > 0) {
+            for (const insumoRef of pecaInsumos) {
+              const filament = filamentsData.find(f => f.id === insumoRef.insumoId);
+              if (filament && filament.tipo === 'filamento') {
+                const quantidadeConsumida = insumoRef.quantidade || 0;
+                totalConsumoFilamento += quantidadeConsumida;
+                if (filament.cor) {
+                  mainFilamentColor = filament.cor;
+                }
+              } else {
+                console.warn(`Filament not found or not of type 'filamento' for insumoRef:`, insumoRef);
+              }
+            }
+          }
+          totalTempoImpressaoPeca = parseFloat(pecaData.tempoImpressao) || 0;
+        }
+
+        // Get current stock for the piece itself
+        const productInStock = productsData.find(p => p.id === pecaId && p.tipo === 'peca');
+        const estoqueAtualPeca = productInStock ? (productInStock.estoqueAtual || 0) : 0;
+
+        return { 
+          ...pecaData, 
+          tempoImpressao: totalTempoImpressaoPeca, // Ensure tempoImpressao is always present and correct
+          consumoFilamento: totalConsumoFilamento, 
+          corFilamento: mainFilamentColor,
+          estoqueAtual: estoqueAtualPeca, // Add stock information
+          // If it's a composed piece, include its parts for further processing
+          partesCompostas: pecaData.isPecaComposta ? (pecaData.gruposImpressao || []).flatMap(grupo => grupo.partes.map(parte => ({
+            parteId: parte.parteId,
+            nome: parte.nome,
+            quantidade: parte.quantidade,
+            sku: parte.sku, // Use sku as identificador
+            estoque: parte.estoque,
+          }))) : [],
+        };
       } else {
         console.warn(`Peca with ID ${pecaId} not found.`);
         return null;
@@ -49,15 +159,23 @@ export default function Producao() {
     }
   };
 
-  const fetchModeloDetails = async (modeloId) => {
+  const fetchModeloDetails = async (modeloId, filamentsData, productsData) => {
     try {
       const modeloDocRef = doc(db, 'modelos', modeloId);
       const modeloDocSnap = await getDoc(modeloDocRef);
       if (modeloDocSnap.exists()) {
         const modeloData = { id: modeloDocSnap.id, ...modeloDocSnap.data() };
-        const pecasPromises = modeloData.pecas.map(p => fetchPecaDetails(p.id));
+        const pecasPromises = modeloData.pecas.map(p => fetchPecaDetails(p.id, filamentsData, productsData));
         modeloData.pecas = (await Promise.all(pecasPromises)).filter(Boolean);
-        return modeloData;
+
+        // Get current stock for the model itself
+        const productInStock = productsData.find(p => p.id === modeloId && p.tipo === 'modelo');
+        const estoqueAtualModelo = productInStock ? (productInStock.estoqueAtual || 0) : 0;
+
+        return { 
+          ...modeloData,
+          estoqueAtual: estoqueAtualModelo // Add stock information
+        };
       } else {
         console.warn(`Modelo with ID ${modeloId} not found.`);
         return null;
@@ -68,7 +186,7 @@ export default function Producao() {
     }
   };
 
-  const fetchKitDetails = async (kitId) => {
+  const fetchKitDetails = async (kitId, filamentsData, productsData) => {
     try {
       const kitDocRef = doc(db, 'kits', kitId);
       const kitDocSnap = await getDoc(kitDocRef);
@@ -77,14 +195,22 @@ export default function Producao() {
         // Ensure kitData.produtos is an array before mapping
         const produtosPromises = (kitData.produtos || []).map(async (p) => {
           if (p.tipo === 'modelo') {
-            return await fetchModeloDetails(p.id);
+            return await fetchModeloDetails(p.id, filamentsData, productsData);
           } else if (p.tipo === 'peca') {
-            return await fetchPecaDetails(p.id);
+            return await fetchPecaDetails(p.id, filamentsData, productsData);
           }
           return null;
         });
         kitData.produtos = (await Promise.all(produtosPromises)).filter(Boolean);
-        return kitData;
+
+        // Get current stock for the kit itself
+        const productInStock = productsData.find(p => p.id === kitId && p.tipo === 'kit');
+        const estoqueAtualKit = productInStock ? (productInStock.estoqueAtual || 0) : 0;
+
+        return { 
+          ...kitData,
+          estoqueAtual: estoqueAtualKit // Add stock information
+        };
       } else {
         console.warn(`Kit with ID ${kitId} not found.`);
         return null;
@@ -95,7 +221,7 @@ export default function Producao() {
     }
   };
 
-  const fetchPedidos = async () => {
+  const fetchPedidos = async (filamentsData, productsData) => {
     try {
       const querySnapshot = await getDocs(collection(db, 'pedidos'));
       const pedidosList = await Promise.all(querySnapshot.docs.map(async doc => {
@@ -108,16 +234,18 @@ export default function Producao() {
           totalTempoImpressao: 0,
           totalTempoMontagem: 0,
           totalConsumoFilamento: 0,
-          productionGroups: [],
+          // Capture existing productionGroups from Firestore
+          existingProductionGroups: doc.data().productionGroups || [],
         };
 
         const productionGroupsMap = new Map(); // Key: `${sourceType}-${sourceId}-${corFilamento}`, Value: group object
 
         for (const item of pedidoData.produtos || []) {
           if (item.tipo === 'peca') {
-            const pecaDetails = await fetchPecaDetails(item.id);
+            const pecaDetails = await fetchPecaDetails(item.id, filamentsData, productsData);
             if (pecaDetails) {
               const key = `peca-${item.id}-${pecaDetails.corFilamento}`;
+              const existingGroup = pedidoData.existingProductionGroups.find(g => g.sourceId === item.id && g.sourceType === 'peca' && g.corFilamento === pecaDetails.corFilamento);
               if (!productionGroupsMap.has(key)) {
                 productionGroupsMap.set(key, {
                   sourceId: item.id,
@@ -127,7 +255,9 @@ export default function Producao() {
                   items: [],
                   tempoImpressaoGrupo: 0,
                   consumoFilamentoGrupo: 0,
-                  status: 'aguardando',
+                  status: existingGroup?.status || 'aguardando', // Use existing status
+                  estoqueAtualProduto: pecaDetails.estoqueAtual || 0, // Add product stock
+                  quantidadeNecessariaProduto: item.quantidade, // Required quantity for this piece
                 });
               }
               const group = productionGroupsMap.get(key);
@@ -143,7 +273,7 @@ export default function Producao() {
               pedidoData.totalTempoMontagem += (pecaDetails.tempoMontagem || 0) * item.quantidade;
             }
           } else if (item.tipo === 'modelo') {
-            const modeloDetails = await fetchModeloDetails(item.id);
+            const modeloDetails = await fetchModeloDetails(item.id, filamentsData, productsData);
             if (modeloDetails && modeloDetails.pecas) {
               const modelPecasByColor = {};
               modeloDetails.pecas.forEach(peca => {
@@ -171,6 +301,7 @@ export default function Producao() {
               for (const colorKey in modelPecasByColor) {
                 const groupData = modelPecasByColor[colorKey];
                 const key = `modelo-${item.id}-${colorKey}`;
+                const existingGroup = pedidoData.existingProductionGroups.find(g => g.sourceId === item.id && g.sourceType === 'modelo' && g.corFilamento === groupData.corFilamento);
                 productionGroupsMap.set(key, {
                   sourceId: item.id,
                   sourceType: 'modelo',
@@ -179,12 +310,14 @@ export default function Producao() {
                   items: groupData.items,
                   tempoImpressaoGrupo: groupData.tempoImpressaoGrupo,
                   consumoFilamentoGrupo: groupData.consumoFilamentoGrupo,
-                  status: 'aguardando',
+                  status: existingGroup?.status || 'aguardando', // Use existing status
+                  estoqueAtualProduto: modeloDetails.estoqueAtual || 0, // Add product stock
+                  quantidadeNecessariaProduto: item.quantidade, // Required quantity for this model
                 });
               }
             }
           } else if (item.tipo === 'kit') {
-            const kitDetails = await fetchKitDetails(item.id);
+            const kitDetails = await fetchKitDetails(item.id, filamentsData, productsData);
             if (kitDetails && kitDetails.produtos) {
               const kitPecasByColor = {};
               for (const kitProduct of kitDetails.produtos) {
@@ -211,32 +344,61 @@ export default function Producao() {
                   pedidoData.totalTempoMontagem += (peca.tempoMontagem || 0) * item.quantidade * (peca.quantidade || 1);
                 } else if (kitProduct.tipo === 'modelo' && kitProduct.pecas) {
                   const modelo = kitProduct;
-                  modelo.pecas.forEach(peca => {
-                    const colorKey = peca.corFilamento;
-                    if (!kitPecasByColor[colorKey]) {
-                      kitPecasByColor[colorKey] = {
-                        corFilamento: peca.corFilamento,
-                        items: [],
-                        tempoImpressaoGrupo: 0,
-                        consumoFilamentoGrupo: 0,
-                      };
+                  modelo.pecas.forEach(peca => { // 'peca' here is actually pecaDetails from fetchPecaDetails
+                    if (peca.isPecaComposta && peca.partesCompostas && peca.partesCompostas.length > 0) {
+                      // If the piece is composed, iterate over its parts
+                      peca.partesCompostas.forEach(parte => {
+                        const colorKey = peca.corFilamento; // Use the main filament color of the composed piece
+                        if (!kitPecasByColor[colorKey]) {
+                          kitPecasByColor[colorKey] = {
+                            corFilamento: peca.corFilamento,
+                            items: [],
+                            tempoImpressaoGrupo: 0,
+                            consumoFilamentoGrupo: 0,
+                          };
+                        }
+                        kitPecasByColor[colorKey].items.push({
+                          id: parte.parteId, // Use parteId for the individual part
+                          nome: parte.nome,
+                          quantidadePedido: item.quantidade * (modelo.quantidade || 1) * (parte.quantidade || 1), // Quantity of the part within the model within the kit
+                          tempoImpressaoPeca: (peca.tempoImpressao || 0) / peca.partesCompostas.length, // Distribute composed piece time among its parts (simplified)
+                          consumoFilamentoPeca: (peca.consumoFilamento || 0) / peca.partesCompostas.length, // Distribute composed piece filament among its parts (simplified)
+                          identificador: parte.sku, // Use sku as identificador for the part
+                        });
+                        // Aggregate total time and filament for the group based on the composed piece's totals
+                        kitPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * item.quantidade * (modelo.quantidade || 1) * (parte.quantidade || 1);
+                        kitPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * item.quantidade * (modelo.quantidade || 1) * (parte.quantidade || 1);
+                        pedidoData.totalTempoMontagem += (peca.tempoMontagem || 0) * item.quantidade * (modelo.quantidade || 1) * (parte.quantidade || 1);
+                      });
+                    } else {
+                      // If it's a simple piece, use existing logic
+                      const colorKey = peca.corFilamento;
+                      if (!kitPecasByColor[colorKey]) {
+                        kitPecasByColor[colorKey] = {
+                          corFilamento: peca.corFilamento,
+                          items: [],
+                          tempoImpressaoGrupo: 0,
+                          consumoFilamentoGrupo: 0,
+                        };
+                      }
+                      kitPecasByColor[colorKey].items.push({
+                        id: peca.id,
+                        nome: peca.nome,
+                        quantidadePedido: item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1),
+                        tempoImpressaoPeca: peca.tempoImpressao || 0,
+                        consumoFilamentoPeca: peca.consumoFilamento || 0,
+                      });
+                      kitPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
+                      kitPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
+                      pedidoData.totalTempoMontagem += (peca.tempoMontagem || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
                     }
-                    kitPecasByColor[colorKey].items.push({
-                      id: peca.id,
-                      nome: peca.nome,
-                      quantidadePedido: item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1),
-                      tempoImpressaoPeca: peca.tempoImpressao || 0,
-                      consumoFilamentoPeca: peca.consumoFilamento || 0,
-                    });
-                    kitPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
-                    kitPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
-                    pedidoData.totalTempoMontagem += (peca.tempoMontagem || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
                   });
                 }
               }
               for (const colorKey in kitPecasByColor) {
                 const groupData = kitPecasByColor[colorKey];
                 const key = `kit-${item.id}-${colorKey}`;
+                const existingGroup = pedidoData.existingProductionGroups.find(g => g.sourceId === item.id && g.sourceType === 'kit' && g.corFilamento === groupData.corFilamento);
                 productionGroupsMap.set(key, {
                   sourceId: item.id,
                   sourceType: 'kit',
@@ -245,7 +407,9 @@ export default function Producao() {
                   items: groupData.items,
                   tempoImpressaoGrupo: groupData.tempoImpressaoGrupo,
                   consumoFilamentoGrupo: groupData.consumoFilamentoGrupo,
-                  status: 'aguardando',
+                  status: existingGroup?.status || 'aguardando', // Use existing status
+                  estoqueAtualProduto: kitDetails.estoqueAtual || 0, // Add product stock
+                  quantidadeNecessariaProduto: item.quantidade, // Required quantity for this kit
                 });
               }
             }
@@ -266,38 +430,57 @@ export default function Producao() {
             return a.sourceName.localeCompare(b.sourceName);
           }
           return a.corFilamento.localeCompare(b.corFilamento);
-        }).map((group, index) => ({
-          ...group,
-          groupIndex: index + 1 // Add 1-based index for display
-        }));
+        }).map((group, index) => {
+          // Find the current stock for the group's filament color
+          const filamentInStock = filamentsData.find(f => f.cor === group.corFilamento && f.tipo === 'filamento');
+          // Use 'estoqueAtual' for filament stock, as defined in estoque/page.jsx
+          const estoqueAtualFilamento = filamentInStock ? (filamentInStock.estoqueAtual || 0) : 0;
+
+          return {
+            ...group,
+            groupIndex: index + 1, // Add 1-based index for display
+            estoqueAtualFilamento: estoqueAtualFilamento,
+            quantidadeNecessariaFilamento: group.consumoFilamentoGrupo, // This is already calculated
+          };
+        });
+        // Remove the temporary existingProductionGroups property
+        delete pedidoData.existingProductionGroups;
         return pedidoData;
       }));
       setPedidos(pedidosList);
-
-      // Flatten all production groups for display in other tabs
-      const allGroups = [];
-      pedidosList.forEach(pedido => {
-        pedido.productionGroups.forEach(group => {
-          allGroups.push({
-            ...group,
-            pedidoId: pedido.id,
-            pedidoNumero: pedido.numero,
-            pedidoComprador: pedido.comprador,
-            pedidoTotalTempoImpressao: pedido.totalTempoImpressao,
-            pedidoTotalConsumoFilamento: pedido.totalConsumoFilamento,
-            pedidoTotalTempoMontagem: pedido.totalTempoMontagem,
-          });
-        });
-      });
-      setDisplayGroups(allGroups);
-
     } catch (error) {
       console.error("Error fetching pedidos: ", error);
     }
   };
 
   const updateProductionGroupStatus = async (pedidoId, groupIndex, newStatus) => {
-    let updatedPedidoData; // Declare updatedPedidoData here
+    // If starting production, perform stock check
+    if (newStatus === 'em_producao') {
+      const pedidoToUpdate = pedidos.find(p => p.id === pedidoId);
+      if (pedidoToUpdate) {
+        const groupToStart = pedidoToUpdate.productionGroups[groupIndex];
+        if (groupToStart) {
+          const requiredFilament = groupToStart.quantidadeNecessariaFilamento;
+          const availableFilamentStock = groupToStart.estoqueAtualFilamento;
+          const requiredProduct = groupToStart.quantidadeNecessariaProduto;
+          const availableProductStock = groupToStart.estoqueAtualProduto;
+
+          if (availableFilamentStock < requiredFilament) {
+            alert(`Estoque insuficiente de filamento ${groupToStart.corFilamento}. Necessário: ${formatFilament(requiredFilament)}, Disponível: ${formatFilament(availableFilamentStock)}.`);
+            // Prevent status update if stock is insufficient
+            return; 
+          }
+
+          // Check product stock for models and kits
+          if (groupToStart.sourceType !== 'peca' && availableProductStock < requiredProduct) {
+            alert(`Estoque insuficiente de ${groupToStart.sourceName}. Necessário: ${requiredProduct}, Disponível: ${availableProductStock}.`);
+            // Prevent status update if product stock is insufficient
+            return;
+          }
+        }
+      }
+    }
+
     // Store original states for potential rollback
     const originalPedidos = [...pedidos];
     const originalDisplayGroups = [...displayGroups];
@@ -316,10 +499,10 @@ export default function Producao() {
 
           // Re-evaluate pedido status locally for optimistic update
           let newPedidoStatus = pedido.status;
-          const hasAnyGroupAguardando = updatedGroups.some(group => group.status === 'aguardando');
           const hasAnyGroupInProduction = updatedGroups.some(group => group.status === 'em_producao');
           const hasAllGroupsProducedOrMontados = updatedGroups.every(group => group.status === 'produzido' || group.status === 'montado');
           const hasAllGroupsMontados = updatedGroups.every(group => group.status === 'montado');
+          const hasAnyGroupAguardando = updatedGroups.some(group => group.status === 'aguardando');
 
           if (hasAnyGroupInProduction) {
             newPedidoStatus = 'em_producao';
@@ -365,10 +548,10 @@ export default function Producao() {
         }
 
         let newPedidoStatusInFirestore = currentPedidoData.status;
-        const hasAnyGroupAguardando = updatedGroupsInFirestore.some(group => group.status === 'aguardando');
         const hasAnyGroupInProduction = updatedGroupsInFirestore.some(group => group.status === 'em_producao');
         const hasAllGroupsProducedOrMontados = updatedGroupsInFirestore.every(group => group.status === 'produzido' || group.status === 'montado');
         const hasAllGroupsMontados = updatedGroupsInFirestore.every(group => group.status === 'montado');
+        const hasAnyGroupAguardando = updatedGroupsInFirestore.some(group => group.status === 'aguardando');
 
         if (hasAnyGroupInProduction) {
           newPedidoStatusInFirestore = 'em_producao';
@@ -385,199 +568,8 @@ export default function Producao() {
           status: newPedidoStatusInFirestore,
         });
 
-        // After successful Firestore update, re-fetch the specific updated pedido
-        const updatedPedidoSnap = await getDoc(pedidoRef);
-        if (updatedPedidoSnap.exists()) {
-          const rawUpdatedPedidoData = updatedPedidoSnap.data();
-          updatedPedidoData = {
-            id: updatedPedidoSnap.id,
-            dataCriacao: rawUpdatedPedidoData.dataCriacao ? rawUpdatedPedidoData.dataCriacao.toDate() : null,
-            dataPrevisao: rawUpdatedPedidoData.dataPrevisao ? rawUpdatedPedidoData.dataPrevisao.toDate() : null,
-            dataConclusao: rawUpdatedPedidoData.dataConclusao ? rawUpdatedPedidoData.dataConclusao.toDate() : null,
-            produtos: rawUpdatedPedidoData.produtos || [], // Ensure products is an array
-            totalTempoImpressao: 0, // Recalculate or get from raw
-            totalTempoMontagem: 0, // Recalculate or get from raw
-            totalConsumoFilamento: 0, // Recalculate or get from raw
-            productionGroups: [], // Will be reprocessed
-            // Copy other necessary properties from rawUpdatedPedidoData
-            ...rawUpdatedPedidoData, // Spread operator to copy all other properties
-          };
-
-          // Re-process production groups for the single updated pedido to ensure groupIndex is correct
-          const reprocessedGroupsMap = new Map();
-          for (const item of updatedPedidoData.produtos) { // No need for || [] here as it's handled above
-            if (item.tipo === 'peca') {
-              const pecaDetails = await fetchPecaDetails(item.id);
-              if (pecaDetails) {
-                const key = `peca-${item.id}-${pecaDetails.corFilamento}`;
-                if (!reprocessedGroupsMap.has(key)) {
-                  reprocessedGroupsMap.set(key, {
-                    sourceId: item.id,
-                    sourceType: 'peca',
-                    sourceName: pecaDetails.nome,
-                    corFilamento: pecaDetails.corFilamento,
-                    items: [],
-                    tempoImpressaoGrupo: 0,
-                    consumoFilamentoGrupo: 0,
-                    status: 'aguardando',
-                  });
-                }
-                const group = reprocessedGroupsMap.get(key);
-                group.items.push({
-                  id: pecaDetails.id,
-                  nome: pecaDetails.nome,
-                  quantidadePedido: item.quantidade,
-                  tempoImpressaoPeca: pecaDetails.tempoImpressao || 0,
-                  consumoFilamentoPeca: pecaDetails.consumoFilamento || 0,
-                });
-                group.tempoImpressaoGrupo += (pecaDetails.tempoImpressao || 0) * item.quantidade;
-                group.consumoFilamentoGrupo += (pecaDetails.consumoFilamento || 0) * item.quantidade;
-                // updatedPedidoData.totalTempoMontagem += (pecaDetails.tempoMontagem || 0) * item.quantidade; // This should be done once after all groups are processed
-              }
-            } else if (item.tipo === 'modelo') {
-              const modeloDetails = await fetchModeloDetails(item.id);
-              if (modeloDetails && modeloDetails.pecas) {
-                const modelPecasByColor = {};
-                modeloDetails.pecas.forEach(peca => {
-                  const colorKey = peca.corFilamento;
-                  if (!modelPecasByColor[colorKey]) {
-                    modelPecasByColor[colorKey] = {
-                      corFilamento: peca.corFilamento,
-                      items: [],
-                      tempoImpressaoGrupo: 0,
-                      consumoFilamentoGrupo: 0,
-                    };
-                  }
-                  modelPecasByColor[colorKey].items.push({
-                    id: peca.id,
-                    nome: peca.nome,
-                    quantidadePedido: item.quantidade * (peca.quantidade || 1),
-                    tempoImpressaoPeca: peca.tempoImpressao || 0,
-                    consumoFilamentoPeca: peca.consumoFilamento || 0,
-                  });
-                  modelPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * item.quantidade * (peca.quantidade || 1);
-                  modelPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * item.quantidade * (peca.quantidade || 1);
-                  // updatedPedidoData.totalTempoMontagem += (peca.tempoMontagem || 0) * item.quantidade * (peca.quantidade || 1);
-                });
-                for (const colorKey in modelPecasByColor) {
-                  const groupData = modelPecasByColor[colorKey];
-                  const key = `modelo-${item.id}-${colorKey}`;
-                  reprocessedGroupsMap.set(key, {
-                    sourceId: item.id,
-                    sourceType: 'modelo',
-                    sourceName: modeloDetails.nome,
-                    corFilamento: groupData.corFilamento,
-                    items: groupData.items,
-                    tempoImpressaoGrupo: groupData.tempoImpressaoGrupo,
-                    consumoFilamentoGrupo: groupData.consumoFilamentoGrupo,
-                    status: 'aguardando',
-                  });
-                }
-              }
-            } else if (item.tipo === 'kit') {
-              const kitDetails = await fetchKitDetails(item.id);
-              if (kitDetails && kitDetails.produtos) {
-                const kitPecasByColor = {};
-                for (const kitProduct of kitDetails.produtos) {
-                  if (kitProduct.tipo === 'peca') {
-                    const peca = kitProduct;
-                    const colorKey = peca.corFilamento;
-                    if (!kitPecasByColor[colorKey]) {
-                      kitPecasByColor[colorKey] = {
-                        corFilamento: peca.corFilamento,
-                        items: [],
-                        tempoImpressaoGrupo: 0,
-                        consumoFilamentoGrupo: 0,
-                      };
-                    }
-                    kitPecasByColor[colorKey].items.push({
-                      id: peca.id,
-                      nome: peca.nome,
-                      quantidadePedido: item.quantidade * (peca.quantidade || 1),
-                      tempoImpressaoPeca: peca.tempoImpressao || 0,
-                      consumoFilamentoPeca: peca.consumoFilamento || 0,
-                    });
-                    kitPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * item.quantidade * (peca.quantidade || 1);
-                    kitPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * item.quantidade * (peca.quantidade || 1);
-                    // updatedPedidoData.totalTempoMontagem += (peca.tempoMontagem || 0) * item.quantidade * (peca.quantidade || 1);
-                  } else if (kitProduct.tipo === 'modelo' && kitProduct.pecas) {
-                    const modelo = kitProduct;
-                    modelo.pecas.forEach(peca => {
-                      const colorKey = peca.corFilamento;
-                      if (!kitPecasByColor[colorKey]) {
-                        kitPecasByColor[colorKey] = {
-                          corFilamento: peca.corFilamento,
-                          items: [],
-                          tempoImpressaoGrupo: 0,
-                          consumoFilamentoGrupo: 0,
-                        };
-                      }
-                      kitPecasByColor[colorKey].items.push({
-                        id: peca.id,
-                        nome: peca.nome,
-                        quantidadePedido: item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1),
-                        tempoImpressaoPeca: peca.tempoImpressao || 0,
-                        consumoFilamentoPeca: peca.consumoFilamento || 0,
-                      });
-                      kitPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
-                      kitPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * item.quantidade * (modelo.quantidade || 1) * (peca.quantidade || 1);
-                    });
-                  }
-                }
-                for (const colorKey in kitPecasByColor) {
-                  const groupData = kitPecasByColor[colorKey];
-                  const key = `kit-${item.id}-${colorKey}`;
-                  reprocessedGroupsMap.set(key, {
-                    sourceId: item.id,
-                    sourceType: 'kit',
-                    sourceName: kitDetails.nome,
-                    corFilamento: groupData.corFilamento,
-                    items: groupData.items,
-                    tempoImpressaoGrupo: groupData.tempoImpressaoGrupo,
-                    consumoFilamentoGrupo: groupData.consumoFilamentoGrupo,
-                    status: 'aguardando',
-                  });
-                }
-              }
-            }
-          }
-          // Calculate total times and filament from the newly formed productionGroups
-          updatedPedidoData.totalTempoImpressao = Array.from(reprocessedGroupsMap.values()).reduce((sum, group) => sum + group.tempoImpressaoGrupo, 0);
-          updatedPedidoData.totalConsumoFilamento = Array.from(reprocessedGroupsMap.values()).reduce((sum, group) => sum + group.consumoFilamentoGrupo, 0);
-          // totalTempoMontagem is already calculated within the loop for each piece.
-        }
-        updatedPedidoData.productionGroups = Array.from(reprocessedGroupsMap.values()).sort((a, b) => {
-          if (a.sourceType !== b.sourceType) {
-            return a.sourceType.localeCompare(b.sourceType);
-          }
-          if (a.sourceName !== b.sourceName) {
-            return a.sourceName.localeCompare(b.sourceName);
-          }
-          return a.corFilamento.localeCompare(b.corFilamento);
-        }).map((group, index) => ({
-          ...group,
-          groupIndex: index + 1
-        }));
-
-        // Update the main pedidos state with the single fresh pedido
-        setPedidos(prevPedidos => prevPedidos.map(p => p.id === updatedPedidoData.id ? updatedPedidoData : p));
-
-        // Update displayGroups based on the single fresh pedido
-        setDisplayGroups(prevDisplayGroups => {
-          const newDisplayGroups = prevDisplayGroups.filter(g => g.pedidoId !== updatedPedidoData.id);
-          updatedPedidoData.productionGroups.forEach(group => {
-            newDisplayGroups.push({
-              ...group,
-              pedidoId: updatedPedidoData.id,
-              pedidoNumero: updatedPedidoData.numero,
-              pedidoComprador: updatedPedidoData.comprador,
-              pedidoTotalTempoImpressao: updatedPedidoData.totalTempoImpressao,
-              pedidoTotalConsumoFilamento: updatedPedidoData.totalConsumoFilamento,
-              pedidoTotalTempoMontagem: updatedPedidoData.totalTempoMontagem,
-            });
-          });
-          return newDisplayGroups;
-        });
+        // After successful Firestore update, re-fetch all pedidos to ensure data consistency
+        fetchPedidos(availableFilaments, availableProducts);
       } else {
         console.error("Pedido not found in Firestore for update.");
       }
@@ -588,6 +580,25 @@ export default function Producao() {
       setDisplayGroups(originalDisplayGroups);
       setActiveTab(originalActiveTab);
     }
+  };
+
+  const revertProductionGroupStatus = async (pedidoId, groupIndex, currentStatus) => {
+    let previousStatus;
+    switch (currentStatus) {
+      case 'em_producao':
+        previousStatus = 'aguardando';
+        break;
+      case 'produzido':
+        previousStatus = 'em_producao';
+        break;
+      case 'montado':
+        previousStatus = 'produzido';
+        break;
+      default:
+        console.warn(`Cannot revert status from ${currentStatus}`);
+        return;
+    }
+    await updateProductionGroupStatus(pedidoId, groupIndex, previousStatus);
   };
 
   const formatTime = (minutes) => {
@@ -727,13 +738,23 @@ export default function Producao() {
                           <div className="flex items-center">
                             Filamento:
                             {group.corFilamento && (
-                              <Package
+                              <Spool
                                 className="h-4 w-4 ml-1"
                                 style={{ color: filamentColors[group.corFilamento] || 'currentColor' }}
                                 title={group.corFilamento}
                               />
                             )}
                           </div>
+                          {/* New: Display Stock Information */}
+                          <p className={group.estoqueAtualFilamento < group.quantidadeNecessariaFilamento ? 'text-red-500' : ''}>
+                            Estoque Atual Filamento: {formatFilament(group.estoqueAtualFilamento)}
+                          </p>
+                          <p>Necessário Filamento: {formatFilament(group.quantidadeNecessariaFilamento)}</p>
+                          {/* Display product stock for all types (peca, modelo, kit) */}
+                          <p className={group.estoqueAtualProduto < group.quantidadeNecessariaProduto ? 'text-red-500' : ''}>
+                            Estoque Atual Produto: {group.estoqueAtualProduto}
+                          </p>
+                          <p>Necessário Produto: {group.quantidadeNecessariaProduto}</p>
                         </div>
                         <ul className="list-disc list-inside text-sm text-gray-600 mb-3">
                           {group.items.map((item, itemIndex) => (
@@ -789,7 +810,7 @@ export default function Producao() {
                   <div className="flex items-center">
                     Filamento:
                     {group.corFilamento && (
-                      <Package
+                      <Spool
                         className="h-4 w-4 ml-1"
                         style={{ color: filamentColors[group.corFilamento] || 'currentColor' }}
                         title={group.corFilamento}
@@ -801,15 +822,6 @@ export default function Producao() {
                   {group.items.map((item, itemIndex) => (
                     <li key={itemIndex}>
                       {item.nome} (x{item.quantidadePedido})
-                      {activeTab === 'produzidos' && (
-                        <span className="ml-2">
-                          {item.produzido ? (
-                            <CheckCircle className="inline-block h-4 w-4 text-green-500" title="Produzido" />
-                          ) : (
-                            <XCircle className="inline-block h-4 w-4 text-red-500" title="Não Produzido" />
-                          )}
-                        </span>
-                      )}
                     </li>
                   ))}
                 </ul>
@@ -827,15 +839,39 @@ export default function Producao() {
                     >
                       <Pause className="h-3 w-3 mr-1" /> Pausar
                     </button>
+                    <button
+                      onClick={() => revertProductionGroupStatus(group.pedidoId, group.groupIndex - 1, group.status)}
+                      className="inline-flex items-center px-3 py-1 border border-red-300 rounded-md shadow-sm text-xs font-medium text-red-700 bg-white hover:bg-red-50"
+                    >
+                      <Trash2 className="h-3 w-3 mr-1" /> Reverter
+                    </button>
                   </div>
                 )}
                 {activeTab === 'produzidos' && (
-                  <button
-                    onClick={() => updateProductionGroupStatus(group.pedidoId, group.groupIndex - 1, 'montado')}
-                    className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700"
-                  >
-                    <FastForward className="h-3 w-3 mr-1" /> Marcar como Montado
-                  </button>
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => updateProductionGroupStatus(group.pedidoId, group.groupIndex - 1, 'montado')}
+                      className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700"
+                    >
+                      <FastForward className="h-3 w-3 mr-1" /> Marcar como Montado
+                    </button>
+                    <button
+                      onClick={() => revertProductionGroupStatus(group.pedidoId, group.groupIndex - 1, group.status)}
+                      className="inline-flex items-center px-3 py-1 border border-red-300 rounded-md shadow-sm text-xs font-medium text-red-700 bg-white hover:bg-red-50"
+                    >
+                      <Trash2 className="h-3 w-3 mr-1" /> Reverter
+                    </button>
+                  </div>
+                )}
+                {activeTab === 'montados' && (
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => revertProductionGroupStatus(group.pedidoId, group.groupIndex - 1, group.status)}
+                      className="inline-flex items-center px-3 py-1 border border-red-300 rounded-md shadow-sm text-xs font-medium text-red-700 bg-white hover:bg-red-50"
+                    >
+                      <Trash2 className="h-3 w-3 mr-1" /> Reverter
+                    </button>
+                  </div>
                 )}
               </div>
             ))

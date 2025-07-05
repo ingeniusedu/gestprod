@@ -19,8 +19,9 @@ const navigation = [
   { name: 'Dashboard', href: '/', icon: Home },
   { name: 'Pedidos', href: '/pedidos', icon: ShoppingCart },
   { name: 'Produção', href: '/producao', icon: Printer }, // Adicionado link para Produção
-  { name: 'Produtos', href: '/produtos', icon: Package },
   { name: 'Estoque', href: '/estoque', icon: Warehouse },
+  { name: 'Mapa de Estoque', href: '/mapa-estoque', icon: Warehouse }, // New: Mapa de Estoque
+  { name: 'Modelos de Recipiente', href: '/modelos-recipiente', icon: Package },
   { name: 'Relatórios', href: '/relatorios', icon: BarChart3 },
 ];
 

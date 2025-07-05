@@ -122,9 +122,16 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       const generatedName = [fabricante, material, tipoFilamento, cor]
         .filter(Boolean) // Remove empty strings
         .join(' ');
+      
+      // Generate grupoFilamento (Fabricante, Material, Cor)
+      const generatedGrupoFilamento = [fabricante, material, cor]
+        .filter(Boolean) // Remove empty strings
+        .join(' ');
+
       setFormData(prev => ({
         ...prev,
         nome: generatedName.trim(),
+        grupoFilamento: generatedGrupoFilamento.trim(), // Set the new group field
       }));
     } else if (formData.tipo === 'embalagem') {
       const { tipoEmbalagem, materialEmbalagem, altura, largura, profundidade } = formData.especificacoes;
@@ -419,7 +426,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
   };
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex justify-center items-center z-50">
+    <div className="fixed inset-0 backdrop-blur-sm overflow-y-auto h-full w-full flex justify-center items-center z-50" style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)' }}>
       <div className="relative p-8 bg-white w-full max-w-2xl mx-auto rounded-lg shadow-lg">
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-2xl font-bold text-gray-900">
@@ -629,13 +636,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
                     <option value="">Selecione a Cor</option>
                     {initialCores.map(option => (
                       <option key={option} value={option}>
-                        <div className="flex items-center">
-                          <div 
-                            className="w-4 h-4 rounded-full mr-2" 
-                            style={{ backgroundColor: getColorStyle(option) }}
-                          ></div>
-                          {option}
-                        </div>
+                        {option}
                       </option>
                     ))}
                     <option value="addNew">Adicionar Nova...</option>

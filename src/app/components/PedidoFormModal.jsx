@@ -7,6 +7,109 @@ import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import ProdutoPedidoSelectionModal from './ProdutoPedidoSelectionModal';
 
 const PedidoFormModal = ({ isOpen, onClose, onSave, initialData }) => {
+  const [availableFilaments, setAvailableFilaments] = useState([]);
+
+  useEffect(() => {
+    const fetchAvailableFilaments = async () => {
+      try {
+        const insumosCollection = collection(db, 'insumos');
+        const insumoSnapshot = await getDocs(insumosCollection);
+        const filamentsList = insumoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(i => i.tipo === 'filamento');
+        setAvailableFilaments(filamentsList);
+      } catch (error) {
+        console.error("Error fetching available filaments: ", error);
+      }
+    };
+
+    if (isOpen) {
+      fetchAvailableFilaments();
+    }
+  }, [isOpen]);
+
+  // Helper functions to fetch details
+  const fetchPecaDetails = async (pecaId) => {
+    try {
+      const pecaDocRef = doc(db, 'pecas', pecaId);
+      const pecaDocSnap = await getDoc(pecaDocRef);
+      if (pecaDocSnap.exists()) {
+        const pecaData = { id: pecaDocSnap.id, ...pecaDocSnap.data() };
+        
+        let totalConsumoFilamento = 0;
+        let mainFilamentColor = 'N/A';
+
+        // Calculate total filament consumption and determine main color
+        if (pecaData.insumos && availableFilaments.length > 0) {
+          for (const insumoRef of pecaData.insumos) {
+            const filament = availableFilaments.find(f => f.id === insumoRef.insumoId);
+            if (filament && filament.tipo === 'filamento') {
+              totalConsumoFilamento += (insumoRef.quantidade || 0); // Assuming quantidade in insumos is in grams/meters
+              if (filament.cor) {
+                mainFilamentColor = filament.cor; // Simple assignment, could be more complex for multiple colors
+              }
+            }
+          }
+        }
+
+        return { 
+          ...pecaData, 
+          consumoFilamento: totalConsumoFilamento, 
+          corFilamento: mainFilamentColor 
+        };
+      } else {
+        console.warn(`Peca with ID ${pecaId} not found.`);
+        return null;
+      }
+    } catch (error) {
+      console.error(`Error fetching peca details for ${pecaId}:`, error);
+      return null;
+    }
+  };
+
+  const fetchModeloDetails = async (modeloId) => {
+    try {
+      const modeloDocRef = doc(db, 'modelos', modeloId);
+      const modeloDocSnap = await getDoc(modeloDocRef);
+      if (modeloDocSnap.exists()) {
+        const modeloData = { id: modeloDocSnap.id, ...modeloDocSnap.data() };
+        const pecasPromises = modeloData.pecas.map(p => fetchPecaDetails(p.id));
+        modeloData.pecas = (await Promise.all(pecasPromises)).filter(Boolean);
+        return modeloData;
+      } else {
+        console.warn(`Modelo with ID ${modeloId} not found.`);
+        return null;
+      }
+    } catch (error) {
+      console.error(`Error fetching modelo details for ${modeloId}:`, error);
+      return null;
+    }
+  };
+
+  const fetchKitDetails = async (kitId) => {
+    try {
+      const kitDocRef = doc(db, 'kits', kitId);
+      const kitDocSnap = await getDoc(kitDocRef);
+      if (kitDocSnap.exists()) {
+        const kitData = { id: kitDocSnap.id, ...kitDocSnap.data() };
+        const produtosPromises = (kitData.produtos || []).map(async (p) => {
+          if (p.tipo === 'modelo') {
+            return await fetchModeloDetails(p.id);
+          } else if (p.tipo === 'peca') {
+            return await fetchPecaDetails(p.id);
+          }
+          return null;
+        });
+        kitData.produtos = (await Promise.all(produtosPromises)).filter(Boolean);
+        return kitData;
+      } else {
+        console.warn(`Kit with ID ${kitId} not found.`);
+        return null;
+      }
+    } catch (error) {
+      console.error(`Error fetching kit details for ${kitId}:`, error);
+      return null;
+    }
+  };
+
   const [numero, setNumero] = useState('');
   const [comprador, setComprador] = useState('');
   const [status, setStatus] = useState('aguardando'); // 'aguardando', 'em_producao', 'concluido', 'cancelado'
@@ -65,7 +168,7 @@ const PedidoFormModal = ({ isOpen, onClose, onSave, initialData }) => {
       setPrecoTotal('');
       setItems([]);
     }
-  }, [isOpen, initialData]);
+  }, [isOpen, initialData, availableFilaments.length]); // Added availableFilaments.length to dependency array
 
   useEffect(() => {
     const calculateTotals = () => {
@@ -102,7 +205,24 @@ const PedidoFormModal = ({ isOpen, onClose, onSave, initialData }) => {
       const itemDocRef = doc(db, collectionName, itemId);
       const itemDocSnap = await getDoc(itemDocRef);
       if (itemDocSnap.exists()) {
-        return { id: itemDocSnap.id, ...itemDocSnap.data(), type: itemType };
+        const data = itemDocSnap.data();
+        if (itemType === 'peca') {
+          let totalConsumoFilamento = 0;
+          let mainFilamentColor = 'N/A';
+          if (data.insumos && availableFilaments.length > 0) {
+            for (const insumoRef of data.insumos) {
+              const filament = availableFilaments.find(f => f.id === insumoRef.insumoId);
+              if (filament && filament.tipo === 'filamento') {
+                totalConsumoFilamento += (insumoRef.quantidade || 0);
+                if (filament.cor) {
+                  mainFilamentColor = filament.cor;
+                }
+              }
+            }
+          }
+          return { id: itemDocSnap.id, ...data, type: itemType, consumoFilamento: totalConsumoFilamento, corFilamento: mainFilamentColor };
+        }
+        return { id: itemDocSnap.id, ...data, type: itemType };
       } else {
         console.warn(`${itemType} with ID ${itemId} not found.`);
         return null;
@@ -152,8 +272,159 @@ const PedidoFormModal = ({ isOpen, onClose, onSave, initialData }) => {
     ));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => { // Made async
     e.preventDefault();
+
+    const productionGroupsMap = new Map(); // Key: `${sourceType}-${sourceId}-${corFilamento}`, Value: group object
+
+    for (const item of items) {
+      if (item.type === 'peca') {
+        const pecaDetails = await fetchPecaDetails(item.id);
+        if (pecaDetails) {
+          const key = `peca-${item.id}-${pecaDetails.corFilamento || ''}`;
+          if (!productionGroupsMap.has(key)) {
+            productionGroupsMap.set(key, {
+              sourceId: item.id,
+              sourceType: 'peca',
+              sourceName: pecaDetails.nome || 'N/A',
+              corFilamento: pecaDetails.corFilamento || 'N/A',
+              items: [],
+              tempoImpressaoGrupo: 0,
+              consumoFilamentoGrupo: 0,
+              status: 'aguardando', // Initial status
+            });
+          }
+          const group = productionGroupsMap.get(key);
+          group.items.push({
+            id: pecaDetails.id,
+            nome: pecaDetails.nome || 'N/A',
+            quantidadePedido: item.quantity || 0,
+            tempoImpressaoPeca: pecaDetails.tempoImpressao || 0,
+            consumoFilamentoPeca: pecaDetails.consumoFilamento || 0,
+          });
+          group.tempoImpressaoGrupo += (pecaDetails.tempoImpressao || 0) * (item.quantity || 0);
+          group.consumoFilamentoGrupo += (pecaDetails.consumoFilamento || 0) * (item.quantity || 0);
+        }
+      } else if (item.type === 'modelo') {
+        const modeloDetails = await fetchModeloDetails(item.id);
+        if (modeloDetails && modeloDetails.pecas) {
+          const modelPecasByColor = {};
+          modeloDetails.pecas.forEach(peca => {
+            const colorKey = peca.corFilamento || '';
+            if (!modelPecasByColor[colorKey]) {
+              modelPecasByColor[colorKey] = {
+                corFilamento: peca.corFilamento || 'N/A',
+                items: [],
+                tempoImpressaoGrupo: 0,
+                consumoFilamentoGrupo: 0,
+              };
+            }
+            modelPecasByColor[colorKey].items.push({
+              id: peca.id,
+              nome: peca.nome || 'N/A',
+              quantidadePedido: item.quantity * (peca.quantidade || 1) || 0,
+              tempoImpressaoPeca: peca.tempoImpressao || 0,
+              consumoFilamentoPeca: peca.consumoFilamento || 0,
+            });
+            modelPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * (item.quantity * (peca.quantidade || 1) || 0);
+            modelPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * (item.quantity * (peca.quantidade || 1) || 0);
+          });
+
+          for (const colorKey in modelPecasByColor) {
+            const groupData = modelPecasByColor[colorKey];
+            const key = `modelo-${item.id}-${colorKey}`;
+            productionGroupsMap.set(key, {
+              sourceId: item.id,
+              sourceType: 'modelo',
+              sourceName: modeloDetails.nome || 'N/A',
+              corFilamento: groupData.corFilamento,
+              items: groupData.items,
+              tempoImpressaoGrupo: groupData.tempoImpressaoGrupo,
+              consumoFilamentoGrupo: groupData.consumoFilamentoGrupo,
+              status: 'aguardando', // Initial status
+            });
+          }
+        }
+      } else if (item.type === 'kit') {
+        const kitDetails = await fetchKitDetails(item.id);
+        if (kitDetails && kitDetails.produtos) {
+          const kitPecasByColor = {};
+          for (const kitProduct of kitDetails.produtos) {
+            if (kitProduct.tipo === 'peca') {
+              const peca = kitProduct;
+              const colorKey = peca.corFilamento || '';
+              if (!kitPecasByColor[colorKey]) {
+                kitPecasByColor[colorKey] = {
+                  corFilamento: peca.corFilamento || 'N/A',
+                  items: [],
+                  tempoImpressaoGrupo: 0,
+                  consumoFilamentoGrupo: 0,
+                };
+              }
+              kitPecasByColor[colorKey].items.push({
+                id: peca.id,
+                nome: peca.nome || 'N/A',
+                quantidadePedido: item.quantity * (peca.quantidade || 1) || 0,
+                tempoImpressaoPeca: peca.tempoImpressao || 0,
+                consumoFilamentoPeca: peca.consumoFilamento || 0,
+              });
+              kitPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * (item.quantity * (peca.quantidade || 1) || 0);
+              kitPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * (item.quantity * (peca.quantidade || 1) || 0);
+            } else if (kitProduct.tipo === 'modelo' && kitProduct.pecas) {
+              const modelo = kitProduct;
+              modelo.pecas.forEach(peca => {
+                const colorKey = peca.corFilamento || '';
+                if (!kitPecasByColor[colorKey]) {
+                  kitPecasByColor[colorKey] = {
+                    corFilamento: peca.corFilamento || 'N/A',
+                    items: [],
+                    tempoImpressaoGrupo: 0,
+                    consumoFilamentoGrupo: 0,
+                  };
+                }
+                kitPecasByColor[colorKey].items.push({
+                  id: peca.id,
+                  nome: peca.nome || 'N/A',
+                  quantidadePedido: item.quantity * (modelo.quantidade || 1) * (peca.quantidade || 1) || 0,
+                  tempoImpressaoPeca: peca.tempoImpressao || 0,
+                  consumoFilamentoPeca: peca.consumoFilamento || 0,
+                });
+                kitPecasByColor[colorKey].tempoImpressaoGrupo += (peca.tempoImpressao || 0) * (item.quantity * (modelo.quantidade || 1) * (peca.quantidade || 1) || 0);
+                kitPecasByColor[colorKey].consumoFilamentoGrupo += (peca.consumoFilamento || 0) * (item.quantity * (modelo.quantidade || 1) * (peca.quantidade || 1) || 0);
+              });
+            }
+          }
+          for (const colorKey in kitPecasByColor) {
+            const groupData = kitPecasByColor[colorKey];
+            const key = `kit-${item.id}-${colorKey}`;
+            productionGroupsMap.set(key, {
+              sourceId: item.id,
+              sourceType: 'kit',
+              sourceName: kitDetails.nome || 'N/A',
+              corFilamento: groupData.corFilamento,
+              items: groupData.items,
+              tempoImpressaoGrupo: groupData.tempoImpressaoGrupo,
+              consumoFilamentoGrupo: groupData.consumoFilamentoGrupo,
+              status: 'aguardando', // Initial status
+            });
+          }
+        }
+      }
+    }
+
+    const productionGroups = Array.from(productionGroupsMap.values()).sort((a, b) => {
+      if (a.sourceType !== b.sourceType) {
+        return a.sourceType.localeCompare(b.sourceType);
+      }
+      if (a.sourceName !== b.sourceName) {
+        return a.sourceName.localeCompare(b.sourceName);
+      }
+      return a.corFilamento.localeCompare(b.corFilamento);
+    }).map((group, index) => ({
+      ...group,
+      groupIndex: index + 1 // Add 1-based index for display
+    }));
+
     const pedidoData = {
       numero,
       comprador,
@@ -163,17 +434,29 @@ const PedidoFormModal = ({ isOpen, onClose, onSave, initialData }) => {
       dataConclusao: dataConclusao ? new Date(dataConclusao) : null,
       custos: { total: parseFloat(custoTotal) || 0 },
       precoTotal: parseFloat(precoTotal) || 0,
-      produtos: items.map(item => ({ // Renamed from 'produtos' to 'items'
+      produtos: items.map(item => ({
         id: item.id,
         nome: item.nome,
         sku: item.sku,
-        tipo: item.type, // Use the 'type' property
+        tipo: item.type,
         quantidade: parseFloat(item.quantity)
       })),
+      productionGroups: productionGroups, // Add the calculated production groups
     };
 
     if (initialData?.id) {
       pedidoData.id = initialData.id;
+      // If editing, merge with existing productionGroups to preserve status
+      if (initialData.productionGroups) {
+        pedidoData.productionGroups = pedidoData.productionGroups.map(newGroup => {
+          const existingGroup = initialData.productionGroups.find(
+            oldGroup => oldGroup.sourceId === newGroup.sourceId &&
+                        oldGroup.sourceType === newGroup.sourceType &&
+                        oldGroup.corFilamento === newGroup.corFilamento
+          );
+          return existingGroup ? { ...newGroup, status: existingGroup.status } : newGroup;
+        });
+      }
     }
 
     onSave(pedidoData);
@@ -183,7 +466,7 @@ const PedidoFormModal = ({ isOpen, onClose, onSave, initialData }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 h-full w-full z-50 flex justify-center items-center">
+    <div className="fixed inset-0 backdrop-blur-sm h-full w-full z-50 flex justify-center items-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)' }}>
       <div className="relative bg-white rounded-lg shadow-xl p-8 w-full max-w-2xl mx-4 flex flex-col max-h-[90vh]">
         <div className="flex justify-between items-center pb-4 border-b border-gray-200 flex-shrink-0">
           <h3 className="text-xl font-semibold text-gray-900">
