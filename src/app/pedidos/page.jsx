@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Plus, Search, Filter, Eye, Edit, Trash2 } from 'lucide-react';
 import PedidoFormModal from '../components/PedidoFormModal';
-import ProductionOrderModal from '../components/ProductionOrderModal';
+import ProductionOrderModal from '../components/ProductionOrderModal'; // Import the new modal
 import { db } from '../services/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 
@@ -13,16 +13,14 @@ export default function Pedidos() {
   const [statusFilter, setStatusFilter] = useState('todos');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentPedido, setCurrentPedido] = useState(null);
-  const [isProductionOrderModalOpen, setIsProductionOrderModalOpen] = useState(false);
-  const [productionOrderData, setProductionOrderData] = useState(null);
+  const [isProductionOrderModalOpen, setIsProductionOrderModalOpen] = useState(false); // State for production order modal
+  const [productionOrderData, setProductionOrderData] = useState(null); // Data for production order modal
 
   useEffect(() => {
     fetchPedidos();
   }, []);
 
   const handleGenerateProductionOrder = (pedido) => {
-    // Here we will process the pedido to generate the production order data
-    // For now, let's just pass the pedido directly
     setProductionOrderData(pedido);
     setIsProductionOrderModalOpen(true);
   };

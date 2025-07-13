@@ -6,7 +6,7 @@ import InsumoFormModal from '../components/InsumoFormModal';
 import FilamentBalanceModal from '../components/FilamentBalanceModal';
 import EstoqueLancamentoModal from '../components/EstoqueLancamentoModal'; // Import the new modal
 import { db, auth } from '../services/firebase';
-import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, orderBy, limit, where } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import Layout from '../components/Layout';
 import PartesPage from './partes/page';
@@ -183,8 +183,29 @@ export default function Estoque() {
     }
   };
 
-  const openModal = () => {
+  const openModal = async () => {
     setInsumoToEdit(null);
+    if (!insumoToEdit) { // Only fetch highest spool number for new insumos
+      try {
+        const q = query(
+          collection(db, 'insumos'),
+          where('tipo', '==', 'filamento')
+        );
+        const querySnapshot = await getDocs(q);
+        let maxSpoolNum = 0;
+        querySnapshot.docs.forEach(doc => {
+          const spoolData = doc.data();
+          const num = parseInt(spoolData.especificacoes.spoolNumero, 10);
+          if (!isNaN(num)) {
+            maxSpoolNum = Math.max(maxSpoolNum, num);
+          }
+        });
+        setHighestSpoolNumber(maxSpoolNum);
+      } catch (error) {
+        console.error("Error fetching highest spool number: ", error);
+        setHighestSpoolNumber(0); // Fallback
+      }
+    }
     setIsModalOpen(true);
   };
   const closeModal = () => {
@@ -342,10 +363,19 @@ export default function Estoque() {
           spools: [],
           hasClosedSpool: false,
           cor: spool.cor,
+          fabricante: spool.especificacoes.fabricante, // Add fabricante to group
+          material: spool.especificacoes.material,     // Add material to group
         };
       } else {
         if (!grouped[key].cor && spool.cor && typeof spool.cor === 'string' && spool.cor.trim() !== '') {
             grouped[key].cor = spool.cor;
+        }
+        // Ensure fabricante and material are consistent across spools in the same group
+        if (!grouped[key].fabricante && spool.especificacoes.fabricante) {
+            grouped[key].fabricante = spool.especificacoes.fabricante;
+        }
+        if (!grouped[key].material && spool.especificacoes.material) {
+            grouped[key].material = spool.especificacoes.material;
         }
       }
       grouped[key].totalSpools += 1;
@@ -357,9 +387,9 @@ export default function Estoque() {
       }
     });
     const sortedGroupedFilaments = Object.values(grouped).sort((a, b) => {
-      const nameA = a.grupoFilamento || '';
-      const nameB = b.grupoFilamento || '';
-      return nameA.localeCompare(nameB);
+      const colorA = a.cor || '';
+      const colorB = b.cor || '';
+      return colorA.localeCompare(colorB);
     });
 
     sortedGroupedFilaments.forEach(group => {
@@ -674,7 +704,7 @@ export default function Estoque() {
                                   {isExpanded ? <ChevronUp className="h-4 w-4 mr-2 text-gray-500" /> : <ChevronDown className="h-4 w-4 mr-2 text-gray-500" />}
                                   <div>
                                     <div className="text-sm font-medium text-gray-900">
-                                      {item.grupoFilamento}
+                                      {item.fabricante} {item.material}
                                     </div>
                                     {item.cor && (
                                       <div className="text-sm text-gray-500">

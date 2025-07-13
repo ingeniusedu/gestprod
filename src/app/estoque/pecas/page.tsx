@@ -28,6 +28,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
   const [allProducts, setAllProducts] = useState<Produto[]>([]); // Added state for all products
   const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalDeEstoque[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
+  const [gruposDeFilamento, setGruposDeFilamento] = useState<any[]>([]); // Using any for now
   const [serviceCosts, setServiceCosts] = useState({
     custoPorMinutoImpressao: 0,
     custoPorMinutoMontagem: 0,
@@ -60,6 +61,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       const kitsCollection = collection(db, 'kits');       // Added
       const locaisDeEstoqueCollection = collection(db, 'locaisDeEstoque');
       const recipientesCollection = collection(db, 'recipientes');
+      const gruposDeFilamentoCollection = collection(db, 'gruposDeFilamento');
 
       const [
         pecasSnapshot,
@@ -68,7 +70,8 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         modelosSnapshot, // Added
         kitsSnapshot,    // Added
         locaisSnapshot,
-        recipientesSnapshot
+        recipientesSnapshot,
+        gruposDeFilamentoSnapshot
       ] = await Promise.all([
         getDocs(pecasCollection),
         getDocs(insumosCollection),
@@ -76,7 +79,8 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         getDocs(modelosCollection), // Added
         getDocs(kitsCollection),    // Added
         getDocs(locaisDeEstoqueCollection),
-        getDocs(recipientesCollection)
+        getDocs(recipientesCollection),
+        getDocs(gruposDeFilamentoCollection)
       ]);
 
       const fetchedPecas = pecasSnapshot.docs.map(doc => {
@@ -113,7 +117,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
           estoqueMinimo: data.estoqueMinimo || 0,
           cor: data.cor || '',
           especificacoes: data.especificacoes || {},
-          grupoFilamento: data.grupoFilamento || '',
+          grupoFilamentoId: data.grupoFilamentoId || '',
           estoqueTotal,
           tipoProduto: 'insumo'
         } as Insumo;
@@ -188,6 +192,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
 
       setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalDeEstoque[]);
       setRecipientes(recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[]);
+      setGruposDeFilamento(gruposDeFilamentoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
 
       const serviceCostsRef = doc(db, 'settings', 'serviceCosts');
       const serviceCostsSnap = await getDoc(serviceCostsRef);
@@ -308,33 +313,21 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       let totalFilamentCost = 0;
       let totalImpressionTime = 0;
       
-      pecaFinal.gruposImpressao.forEach((grupo: GrupoImpressao) => {
+      for (const grupo of pecaFinal.gruposImpressao) {
         totalImpressionTime += Number(grupo.tempoImpressao || 0);
-        if (grupo.filamentos && grupo.filamentos.principal) { // Check if principal exists
-          const filamentosArray = [grupo.filamentos.principal, ...(grupo.filamentos.alternativos || [])];
-          filamentosArray.forEach((fil: PecaInsumo) => {
-            if (fil.quantidade > 0) {
-              // Find an available insumo from the principal group
-              let insumoToUse = insumos.find(i => i.grupoFilamento === fil.grupoFilamento && i.posicoesEstoque && i.posicoesEstoque.length > 0 && i.posicoesEstoque.reduce((acc, pos) => acc + pos.quantidade, 0) > 0);
-              // If not available, try the alternative group
-              if (!insumoToUse && fil.isAlternative && fil.alternativeFilaments) {
-                for (const altFil of fil.alternativeFilaments) {
-                  insumoToUse = insumos.find(i => i.grupoFilamento === altFil.grupoFilamento && i.posicoesEstoque && i.posicoesEstoque.length > 0 && i.posicoesEstoque.reduce((acc, pos) => acc + pos.quantidade, 0) > 0);
-                  if (insumoToUse) break;
-                }
-              }
-
-              if (insumoToUse && insumoToUse.custoPorUnidade) {
-                totalFilamentCost += Number(fil.quantidade || 0) * Number(insumoToUse.custoPorUnidade || 0);
+        if (grupo.filamentos && Array.isArray(grupo.filamentos)) {
+          for (const fil of grupo.filamentos) {
+            if (fil.quantidade > 0 && fil.grupoFilamentoId) {
+              const grupoDeFilamento = gruposDeFilamento.find(g => g.id === fil.grupoFilamentoId);
+              if (grupoDeFilamento && grupoDeFilamento.custoMedioPonderado > 0) {
+                totalFilamentCost += Number(fil.quantidade || 0) * grupoDeFilamento.custoMedioPonderado;
               } else {
-                // Handle case where no filament is available or has no cost
-                // For now, we'll just log a warning. A better approach might be to throw an error.
-                console.warn(`Nenhum filamento disponível ou sem custo para o grupo ${fil.grupoFilamento}. O custo pode estar incorreto.`);
+                console.warn(`Grupo de filamento ${fil.grupoFilamentoId} não encontrado ou sem custo médio. O custo da peça pode estar incorreto.`);
               }
             }
-          });
+          }
         }
-      });
+      }
 
       const impressionCost = totalImpressionTime * Number(serviceCosts.custoPorMinutoImpressao || 0);
       const assemblyCost = Number(pecaFinal.tempoMontagem || 0) * Number(serviceCosts.custoPorMinutoMontagem || 0);
@@ -396,7 +389,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
   const renderPecaCard = (peca: Peca) => {
     const totalTempoImpressao = peca.gruposImpressao?.reduce((acc: number, g: GrupoImpressao) => acc + (Number(g.tempoImpressao) || 0), 0) || 0;
     const totalFilamento = peca.gruposImpressao?.reduce((acc: number, g: GrupoImpressao) => {
-      const filamentInGroup = g.filamentos?.principal ? [g.filamentos.principal, ...(g.filamentos.alternativos || [])].reduce((fAcc: number, f: PecaInsumo) => fAcc + (Number(f.quantidade) || 0), 0) : 0;
+      const filamentInGroup = Array.isArray(g.filamentos) ? g.filamentos.reduce((fAcc: number, f: PecaInsumo) => fAcc + (Number(f.quantidade) || 0), 0) : 0;
       return acc + filamentInGroup;
     }, 0) || 0;
     const totalTempoMontagem = Number(peca.tempoMontagem) || 0;
@@ -431,20 +424,14 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
             {peca.gruposImpressao?.map((grupo: GrupoImpressao, groupIndex: number) => (
               <React.Fragment key={groupIndex}>
                 <div className="flex flex-wrap gap-2">
-                  {grupo.filamentos && [grupo.filamentos.principal, ...(grupo.filamentos.alternativos || [])].map((filamento: PecaInsumo, fIndex: number) => {
-                    if (!filamento) return null;
-                    const insumo = insumos.find(i => i.grupoFilamento === filamento.grupoFilamento);
-                    const colorName = insumo ? insumo.cor : 'Default';
+                  {Array.isArray(grupo.filamentos) && grupo.filamentos.map((filamento: PecaInsumo, fIndex: number) => {
+                    if (!filamento || !filamento.grupoFilamentoId) return null;
+                    const grupoDeFilamento = gruposDeFilamento.find(g => g.id === filamento.grupoFilamentoId);
+                    const colorName = grupoDeFilamento ? grupoDeFilamento.cor : 'Default';
                     const colorStyle = getColorStyle(colorName || 'Default');
 
-                    if (colorName === 'Transição') {
-                      return (
-                        <div key={`${groupIndex}-${fIndex}`} title={filamento.grupoFilamento} className="h-6 w-6 rounded-full" style={{ background: colorStyle }} />
-                      );
-                    }
-
                     return (
-                      <div key={`${groupIndex}-${fIndex}`} title={filamento.grupoFilamento}>
+                      <div key={`${groupIndex}-${fIndex}`} title={grupoDeFilamento?.nome || 'Grupo não encontrado'}>
                         <Spool
                           className="h-6 w-6"
                           style={{ color: colorStyle }}
@@ -489,7 +476,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
   const renderPecaListRow = (peca: Peca) => {
     const totalTempoImpressao = peca.gruposImpressao?.reduce((acc: number, g: GrupoImpressao) => acc + (Number(g.tempoImpressao) || 0), 0) || 0;
     const totalFilamento = peca.gruposImpressao?.reduce((acc: number, g: GrupoImpressao) => {
-      const filamentInGroup = g.filamentos?.principal ? [g.filamentos.principal, ...(g.filamentos.alternativos || [])].reduce((fAcc: number, f: PecaInsumo) => fAcc + (Number(f.quantidade) || 0), 0) : 0;
+      const filamentInGroup = Array.isArray(g.filamentos) ? g.filamentos.reduce((fAcc: number, f: PecaInsumo) => fAcc + (Number(f.quantidade) || 0), 0) : 0;
       return acc + filamentInGroup;
     }, 0) || 0;
     const totalTempoMontagem = Number(peca.tempoMontagem) || 0;
@@ -617,7 +604,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       </div>
       {filteredPecas.length > 0 ? (
         viewMode === 'grid' ? (
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 px-6 py-4">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 px-6 py-4">
             {filteredPecas.map(renderPecaCard)}
           </div>
         ) : (
@@ -683,7 +670,6 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         initialTipoProduto="peca"
         recipiente={recipienteToEdit}
         local={localToEdit}
-        produtos={allProducts} // Pass all products here
       />
     </div>
   );

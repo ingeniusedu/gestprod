@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { X, Save } from 'lucide-react';
 import PropTypes from 'prop-types';
+import { db } from '../services/firebase'; // Import db
+import { collection, query, where, getDocs, addDoc } from 'firebase/firestore'; // Import firestore functions
 import { Spool, Package } from 'lucide-react'; // Assuming Spool icon is available or will be added
 
 const initialFabricantes = ['3D Prime', 'Voolt 3D', 'National 3D'];
@@ -10,7 +12,7 @@ const initialTiposEmbalagem = ['Saco', 'Caixa', 'Envelope'];
 const initialMateriaisEmbalagem = ['Algodão', 'Kraft', 'MDF', 'Plástico'];
 const initialCores = [
   'Amarelo', 'Areia', 'Azul', 'Azul Bebê', 'Azul Cyan', 'Azul macaron', 'Azul Tiffany',
-  'Branco', 'Cappuccino', 'Caucasiano', 'Cinza Nintendo', 'Laranja', 'Laranja macaron',
+  'Branco', 'Cappuccino', '6F4E37', 'Caucasiano', 'Cinza Nintendo', 'Laranja', 'Laranja macaron',
   'Magenta', 'Marrom', 'Natural', 'Preto', 'Rosa Bebê', 'Rosa macaron', 'Roxo',
   'Transição', 'Verde', 'Vermelho', 'Vermelho escuro', 'Verde macaron', 'Verde Menta',
   'Verde neon', 'Verde Oliva'
@@ -32,7 +34,7 @@ const initialFormState = {
     numeroSpools: 1,
     tamanhoSpool: '1000',
     valorPagoPorSpool: '',
-    spoolNumero: '',
+    spoolNumero: 0, // Change to number
     autoNumberSpool: true,
     aberto: false,
     dataAbertura: '',
@@ -72,7 +74,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
     if (isOpen) {
       if (initialData) {
         // When editing, populate form with initialData
-        setFormData({
+        setFormData(prev => ({
           ...initialData,
           // Ensure nested objects are copied to avoid direct mutation
           especificacoes: {
@@ -89,18 +91,15 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
             valorTotalPago: parseFloat(initialData.especificacoes?.valorTotalPago || 0),
             valorFrete: parseFloat(initialData.especificacoes?.valorFrete || 0),
             dataCompraEmbalagem: initialData.especificacoes?.dataCompraEmbalagem || '',
+            spoolNumero: parseInt(initialData.especificacoes?.spoolNumero, 10) || 0, // Parse as number
           },
-        });
-        // Ensure custoPorUnidade is rounded when loading existing data
-        setFormData(prev => ({
-          ...prev,
           custoPorUnidade: parseFloat((initialData.custoPorUnidade || 0).toFixed(2)),
         }));
       } else {
         // When creating new, reset to initial state
         const newFormData = { ...initialFormState };
         if (newFormData.tipo === 'filamento' && newFormData.especificacoes.autoNumberSpool) {
-          newFormData.especificacoes.spoolNumero = `${highestExistingSpoolNumber + 1}`;
+          newFormData.especificacoes.spoolNumero = highestExistingSpoolNumber + 1; // Ensure it's a number
         }
         setFormData(newFormData);
       }
@@ -122,16 +121,10 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       const generatedName = [fabricante, material, tipoFilamento, cor]
         .filter(Boolean) // Remove empty strings
         .join(' ');
-      
-      // Generate grupoFilamento (Fabricante, Material, Cor)
-      const generatedGrupoFilamento = [fabricante, material, cor]
-        .filter(Boolean) // Remove empty strings
-        .join(' ');
 
       setFormData(prev => ({
         ...prev,
         nome: generatedName.trim(),
-        grupoFilamento: generatedGrupoFilamento.trim(), // Set the new group field
       }));
     } else if (formData.tipo === 'embalagem') {
       const { tipoEmbalagem, materialEmbalagem, altura, largura, profundidade } = formData.especificacoes;
@@ -172,7 +165,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
             numeroSpools: 1,
             tamanhoSpool: '1000',
             valorPagoPorSpool: '',
-            spoolNumero: '',
+            spoolNumero: 0, // Change to number
             autoNumberSpool: true,
             aberto: false,
             dataAbertura: '',
@@ -277,7 +270,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
         especificacoes: {
           ...prev.especificacoes,
           autoNumberSpool: checked,
-          spoolNumero: checked ? '' : prev.especificacoes.spoolNumero // Clear manual number if auto is checked
+          spoolNumero: checked ? 0 : (parseInt(prev.especificacoes.spoolNumero, 10) || 0) // Clear manual number if auto is checked, or keep as number
         }
       }));
       return;
@@ -286,7 +279,7 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
     setFormData(prev => {
       let newEspecificacoes = {
         ...prev.especificacoes,
-        [name]: type === 'number' ? parseFloat(value) || 0 : (type === 'checkbox' ? checked : value),
+        [name]: type === 'number' ? parseFloat(value) || 0 : (name === 'spoolNumero' ? (parseInt(value, 10) || 0) : (type === 'checkbox' ? checked : value)),
       };
 
       // Handle pesoBruto and pesoLiquido calculation
@@ -365,8 +358,8 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       if (!formData.especificacoes.tamanhoSpool) newErrors.tamanhoSpool = 'Tamanho do Spool é obrigatório.';
       if (formData.especificacoes.valorPagoPorSpool <= 0) newErrors.valorPagoPorSpool = 'Valor pago por Spool deve ser maior que zero.';
       // Spool number is only required if not auto-numbering and not editing
-      if (!initialData && !formData.especificacoes.autoNumberSpool && formData.especificacoes.spoolNumero.trim() === '') {
-        newErrors.spoolNumero = 'Número do Spool é obrigatório quando a numeração automática está desativada.';
+      if (!initialData && !formData.especificacoes.autoNumberSpool && (formData.especificacoes.spoolNumero === 0 || isNaN(formData.especificacoes.spoolNumero))) {
+        newErrors.spoolNumero = 'Número do Spool é obrigatório e deve ser um número válido quando a numeração automática está desativada.';
       }
 
       if (formData.especificacoes.aberto && !formData.especificacoes.dataAbertura) newErrors.dataAbertura = 'Data de Abertura é obrigatória.';
@@ -398,11 +391,63 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (validateForm()) {
-      // If initialData exists, it means we are editing, so pass the ID
-      onSave(initialData ? { ...formData, id: initialData.id } : formData);
+      let dataToSave = { ...formData };
+      if (initialData?.id) {
+        dataToSave.id = initialData.id;
+      }
+
+      // If it's a filament, handle the group logic and set estoqueAtual
+      if (dataToSave.tipo === 'filamento') {
+        const { fabricante, material } = dataToSave.especificacoes;
+        const { cor } = dataToSave;
+        const groupName = `${fabricante} ${material} ${cor}`.trim();
+        
+        // This is a simplified client-side logic.
+        // Ideally, this check-and-create logic should be in a transaction or a Cloud Function
+        // to prevent race conditions. For now, we proceed with this implementation.
+        const gruposRef = collection(db, 'gruposDeFilamento');
+        const q = query(gruposRef, where("nome", "==", groupName));
+        const querySnapshot = await getDocs(q);
+
+        let groupId;
+        if (querySnapshot.empty) {
+          // Group doesn't exist, create it
+          const newGroupDoc = await addDoc(gruposRef, {
+            nome: groupName,
+            fabricante,
+            material,
+            cor: dataToSave.cor,
+            custoMedioPonderado: 0, // Will be updated by Cloud Function
+            estoqueTotalGramas: 0, // Will be updated by Cloud Function
+            spoolsEmEstoqueIds: [], // Will be updated by Cloud Function
+            updatedAt: new Date(),
+          });
+          groupId = newGroupDoc.id;
+        } else {
+          // Group exists, get its ID
+          groupId = querySnapshot.docs[0].id;
+        }
+        dataToSave.grupoFilamentoId = groupId;
+        dataToSave.grupoFilamento = groupName; // Save the group name string on the insumo document
+
+        // Set estoqueAtual for filament based on its state
+        if (!initialData?.id) { // If it's a new insumo
+          dataToSave.estoqueAtual = parseFloat(dataToSave.especificacoes.tamanhoSpool) || 0;
+        } else { // If it's an existing insumo
+          if (dataToSave.especificacoes.aberto) {
+            dataToSave.estoqueAtual = parseFloat(dataToSave.especificacoes.pesoLiquido) || 0;
+          } else {
+            dataToSave.estoqueAtual = parseFloat(dataToSave.especificacoes.tamanhoSpool) || 0;
+          }
+        }
+        // Set estoqueMinimo for filaments, can be 0 or a default value
+        dataToSave.estoqueMinimo = 0; 
+      }
+
+      onSave(dataToSave);
     }
   };
 
@@ -692,10 +737,10 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
                 <div>
                   <label htmlFor="spoolNumero" className="block text-sm font-medium text-gray-700">Número do Spool</label>
                   <input
-                    type="text"
+                    type="number"
                     name="spoolNumero"
                     id="spoolNumero"
-                    value={formData.especificacoes.spoolNumero || ''}
+                    value={formData.especificacoes.spoolNumero || 0}
                     onChange={handleEspecificacoesChange}
                     disabled={formData.especificacoes.autoNumberSpool}
                     className={`mt-1 block w-full border ${errors.spoolNumero ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500 ${formData.especificacoes.autoNumberSpool ? 'bg-gray-100 cursor-not-allowed' : ''}`}

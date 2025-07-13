@@ -1,10 +1,19 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2 } from 'lucide-react';
-import { getPartes, addParte, updateParte, deleteParte, deletePartes, getLocaisDeEstoque, getRecipientes } from '../../services/firebase';
-import { Parte, PosicaoEstoque } from '../../types';
+import { Plus, Search, Edit, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { getPartes, addParte, updateParte, deleteParte, deletePartes, getLocaisDeEstoque, getRecipientes, db } from '../../services/firebase';
+import { Parte, PosicaoEstoque, EstoqueLancamento } from '../../types';
 import { LocalDeEstoque, Recipiente } from '../../types/mapaEstoque';
+import { v4 as uuidv4 } from 'uuid';
+import { collection, addDoc, Timestamp } from 'firebase/firestore';
+import { cleanObject } from '../../utils/cleanObject';
+
+interface DetailedLocation {
+  displayString: string;
+  recipienteId: string;
+  divisao?: { h: number; v: number };
+}
 
 const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) => {
   const [searchTerm, setSearchTerm] = useState(propSearchTerm);
@@ -21,6 +30,7 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     nome: '',
     posicoesEstoque: [] as PosicaoEstoque[], // Initialize as empty array
   });
+  const [expandedRows, setExpandedRows] = useState<string[]>([]);
 
   useEffect(() => {
     setSearchTerm(propSearchTerm);
@@ -30,9 +40,9 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     const fetchAllData = async () => {
       try {
         const [partesList, locaisList, recipientesList] = await Promise.all([
-          getPartes(),
-          getLocaisDeEstoque(),
-          getRecipientes(),
+          getPartes() as Promise<Parte[]>,
+          getLocaisDeEstoque() as Promise<LocalDeEstoque[]>,
+          getRecipientes() as Promise<Recipiente[]>,
         ]);
         setPartes(partesList);
         setLocaisDeEstoque(locaisList);
@@ -47,20 +57,44 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     fetchAllData();
   }, []);
 
-  const handleInputChange = (e) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData({ ...formData, [name]: value });
   };
 
-  const handleAddEditParte = async (e) => {
+  const handleAddEditParte = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       if (currentParte) {
-        await updateParte(currentParte.id, formData);
+        // For existing parts, we only allow updating SKU and Nome directly.
+        // Stock positions are managed via separate launches.
+        await updateParte(currentParte.id, { sku: formData.sku, nome: formData.nome });
       } else {
-        await addParte(formData);
+        // When adding a new part, create the part document first.
+        const newParteRef = await addParte({ sku: formData.sku, nome: formData.nome, posicoesEstoque: [] });
+        const newParteId = newParteRef.id;
+
+        // If there are initial stock positions, create EstoqueLancamento documents for them
+        for (const pos of formData.posicoesEstoque) {
+          const estoqueLancamento: EstoqueLancamento = {
+            id: uuidv4(),
+            tipoProduto: 'partes',
+            produtoId: newParteId,
+            tipoMovimento: 'entrada',
+            data: Timestamp.fromDate(new Date()),
+            usuario: 'Sistema de Estoque', // Or actual user
+            observacao: `Lançamento inicial de estoque para nova parte: ${formData.nome}`,
+            locais: [{
+              recipienteId: pos.recipienteId,
+              divisao: pos.divisao,
+              quantidade: pos.quantidade,
+              localId: pos.localId || '', // Add localId
+            }],
+          };
+          await addDoc(collection(db, 'lancamentosEstoque'), cleanObject(estoqueLancamento));
+        }
       }
-      const updatedPartes = await getPartes();
+      const updatedPartes = await getPartes() as Parte[];
       setPartes(updatedPartes);
       setIsModalOpen(false);
       setCurrentParte(null);
@@ -71,11 +105,11 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     }
   };
 
-  const handleDeleteParte = async (id) => {
+  const handleDeleteParte = async (id: string) => {
     if (window.confirm("Tem certeza que deseja deletar esta parte?")) {
       try {
         await deleteParte(id);
-        const updatedPartes = await getPartes();
+        const updatedPartes = await getPartes() as Parte[];
         setPartes(updatedPartes);
         setSelectedPartes(prev => prev.filter(parteId => parteId !== id));
       } catch (err) {
@@ -89,7 +123,7 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     if (window.confirm(`Tem certeza que deseja deletar ${selectedPartes.length} partes selecionadas?`)) {
       try {
         await deletePartes(selectedPartes);
-        const updatedPartes = await getPartes();
+        const updatedPartes = await getPartes() as Parte[];
         setPartes(updatedPartes);
         setSelectedPartes([]);
       } catch (err) {
@@ -99,26 +133,30 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     }
   };
 
-  const handleSelectParte = (id) => {
+  const handleSelectParte = (id: string) => {
     setSelectedPartes(prev =>
       prev.includes(id) ? prev.filter(parteId => parteId !== id) : [...prev, id]
     );
   };
 
-  const handleSelectAllPartes = (e) => {
+  const handleSelectAllPartes = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
-      setSelectedPartes(filteredPartes.map(p => p.id));
+      setSelectedPartes(filteredPartes.map(p => p.id!));
     } else {
       setSelectedPartes([]);
     }
   };
 
-  const openModal = (parte = null) => {
+  const openModal = (parte: Parte | null = null) => {
     setCurrentParte(parte);
     if (parte) {
-      setFormData(parte);
+      setFormData({
+        sku: parte.sku,
+        nome: parte.nome,
+        posicoesEstoque: parte.posicoesEstoque || [],
+      });
     } else {
-      setFormData({ sku: '', nome: '', estoque: 0, local: '' });
+      setFormData({ sku: '', nome: '', posicoesEstoque: [] });
     }
     setIsModalOpen(true);
   };
@@ -126,30 +164,48 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
   const closeModal = () => {
     setIsModalOpen(false);
     setCurrentParte(null);
-    setFormData({ sku: '', nome: '', estoque: 0, local: '' });
+    setFormData({ sku: '', nome: '', posicoesEstoque: [] });
   };
 
-  const getLocalName = (recipienteId: string) => {
-    const recipiente = recipientes.find(r => r.id === recipienteId);
-    if (recipiente) {
-      const local = locaisDeEstoque.find(l => l.id === recipiente.localEstoqueId);
-      return local ? local.nome : 'Local Desconhecido';
-    }
-    return 'N/A';
+  const getDetailedLocations = (posicoes: PosicaoEstoque[]) => {
+    if (!posicoes || posicoes.length === 0) return [];
+
+    return posicoes.map(pos => {
+      const recipiente = recipientes.find((r: Recipiente) => r.id === pos.recipienteId);
+      if (recipiente) {
+        const local = locaisDeEstoque.find((l: LocalDeEstoque) => l.id === recipiente.localEstoqueId);
+        const localName = local ? local.nome : 'Local Desconhecido';
+        const { x, y, z } = recipiente.posicaoNaGrade;
+        const divisionString = pos.divisao ? ` (Divisão: H${pos.divisao.h} V${pos.divisao.v})` : '';
+        return {
+          displayString: `${localName} (${x},${y},${z})${divisionString}`,
+          recipienteId: pos.recipienteId,
+          divisao: pos.divisao,
+        } as DetailedLocation;
+      }
+      return null;
+    }).filter((loc): loc is DetailedLocation => loc !== null); // Filter out nulls and assert type
   };
 
-  const getLocalString = (posicoes: PosicaoEstoque[]) => {
-    if (!posicoes || posicoes.length === 0) return 'N/A';
-    const uniqueLocations = Array.from(new Set(posicoes.map(pos => getLocalName(pos.recipienteId))));
-    return uniqueLocations.join(', ');
+  const getLocalSummaryString = (posicoes: PosicaoEstoque[]) => {
+    const detailedLocations = getDetailedLocations(posicoes);
+    if (detailedLocations.length === 0) return 'N/A';
+    const uniqueSummary = Array.from(new Set(detailedLocations.map(loc => loc.displayString.split(' (Divisão:')[0])));
+    return uniqueSummary.join(', ');
   };
 
-  const filteredPartes = partes.filter(parte => {
-    const parteLocal = getLocalString(parte.posicoesEstoque || []);
+  const toggleRowExpansion = (parteId: string) => {
+    setExpandedRows(prev =>
+      prev.includes(parteId) ? prev.filter(id => id !== parteId) : [...prev, parteId]
+    );
+  };
+
+  const filteredPartes = partes.filter((parte: Parte) => {
+    const parteLocalSummary = getLocalSummaryString(parte.posicoesEstoque || []);
     return (
       parte.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
       parte.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      parteLocal.toLowerCase().includes(searchTerm.toLowerCase())
+      parteLocalSummary.toLowerCase().includes(searchTerm.toLowerCase())
     );
   });
 
@@ -209,39 +265,69 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredPartes.map((parte) => (
-                <tr key={parte.id} className={`hover:bg-gray-50 ${selectedPartes.includes(parte.id!) ? 'bg-blue-50' : ''}`}>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <input
-                      type="checkbox"
-                      checked={selectedPartes.includes(parte.id!)}
-                      onChange={() => handleSelectParte(parte.id!)}
-                    />
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{parte.sku}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{parte.nome}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{parte.estoqueTotal || 0}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getLocalString(parte.posicoesEstoque || [])}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <div className="flex items-center justify-end">
-                      <button
-                        onClick={() => openModal(parte)}
-                        className="text-blue-600 hover:text-blue-900 p-1 rounded-full hover:bg-blue-100"
-                        title="Editar Parte"
-                      >
-                        <Edit className="h-5 w-5" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteParte(parte.id!)}
-                        className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
-                        title="Deletar Parte"
-                      >
-                        <Trash2 className="h-5 w-5" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {filteredPartes.map((parte) => {
+                const isExpanded = expandedRows.includes(parte.id!);
+                const detailedLocations = getDetailedLocations(parte.posicoesEstoque || []);
+                return (
+                  <React.Fragment key={parte.id}>
+                    <tr className={`hover:bg-gray-50 ${selectedPartes.includes(parte.id!) ? 'bg-blue-50' : ''}`}>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          checked={selectedPartes.includes(parte.id!)}
+                          onChange={() => handleSelectParte(parte.id!)}
+                        />
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{parte.sku}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{parte.nome}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{parte.estoqueTotal || 0}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <div className="flex items-center">
+                          {getLocalSummaryString(parte.posicoesEstoque || [])}
+                          {detailedLocations.length > 1 && (
+                            <button
+                              onClick={() => toggleRowExpansion(parte.id!)}
+                              className="ml-2 p-1 rounded-full hover:bg-gray-200"
+                              title={isExpanded ? "Recolher Locais" : "Expandir Locais"}
+                            >
+                              {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <div className="flex items-center justify-end">
+                          <button
+                            onClick={() => openModal(parte)}
+                            className="text-blue-600 hover:text-blue-900 p-1 rounded-full hover:bg-blue-100"
+                            title="Editar Parte"
+                          >
+                            <Edit className="h-5 w-5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteParte(parte.id!)}
+                            className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
+                            title="Deletar Parte"
+                          >
+                            <Trash2 className="h-5 w-5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {isExpanded && detailedLocations.length > 0 && ( // Changed from > 1 to > 0 to show even if only one detailed location exists
+                      <tr>
+                        <td colSpan={6} className="px-6 py-2 bg-gray-100 text-sm text-gray-700">
+                          <ul className="list-disc list-inside ml-4">
+                            {detailedLocations.map((loc, idx) => (
+                              <li key={idx}>{loc.displayString}</li>
+                            ))}
+                          </ul>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

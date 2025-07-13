@@ -29,11 +29,12 @@ const partesCollectionRef = collection(db, 'partes');
 
 export const addParte = async (parteData) => {
   try {
-    // Prioritize existing identificador, otherwise derive from SKU
+    // When adding a new part, only SKU and Nome are directly set.
+    // posicoesEstoque will be managed via EstoqueLancamento documents.
     const identificador = parteData.identificador || (parteData.sku ? parteData.sku.split('-').pop() : '');
-    const dataToSave = { ...parteData, identificador };
+    const dataToSave = { sku: parteData.sku, nome: parteData.nome, identificador, posicoesEstoque: [] };
     const docRef = await addDoc(partesCollectionRef, dataToSave);
-    return { id: docRef.id, ...dataToSave };
+    return docRef; // Return the document reference for ID
   } catch (e) {
     console.error("Error adding document: ", e);
     throw e;
@@ -57,9 +58,9 @@ export const getPartes = async () => {
 
 export const updateParte = async (id, parteData) => {
   try {
-    // Prioritize existing identificador, otherwise derive from SKU
+    // Only allow updating SKU and Nome directly. Stock is managed via EstoqueLancamento.
     const identificador = parteData.identificador || (parteData.sku ? parteData.sku.split('-').pop() : '');
-    const dataToUpdate = { ...parteData, identificador };
+    const dataToUpdate = { sku: parteData.sku, nome: parteData.nome, identificador };
     const parteDocRef = doc(db, 'partes', id);
     await updateDoc(parteDocRef, dataToUpdate);
     return { id, ...dataToUpdate };

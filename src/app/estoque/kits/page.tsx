@@ -188,9 +188,8 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
         if (foundPeca.isComposta && foundPeca.gruposImpressao) {
           foundPeca.gruposImpressao.forEach(grupo => {
             totalImpressionTime += (grupo.tempoImpressao || 0) * modeloPeca.quantidade;
-            if (grupo.filamentos && grupo.filamentos.principal) {
-              const filamentosArray = [grupo.filamentos.principal, ...(grupo.filamentos.alternativos || [])];
-              filamentosArray.forEach(filamento => {
+            if (grupo.filamentos && Array.isArray(grupo.filamentos)) {
+              grupo.filamentos.forEach(filamento => {
                 totalFilamentQuantity += (filamento.quantidade || 0) * modeloPeca.quantidade;
               });
             }
@@ -198,9 +197,8 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
         } else if (!foundPeca.isComposta && foundPeca.gruposImpressao && foundPeca.gruposImpressao.length > 0) { // Handle simple pieces with impression groups
           foundPeca.gruposImpressao.forEach(grupo => {
             totalImpressionTime += (grupo.tempoImpressao || 0) * modeloPeca.quantidade;
-            if (grupo.filamentos && grupo.filamentos.principal) {
-              const filamentosArray = [grupo.filamentos.principal, ...(grupo.filamentos.alternativos || [])];
-              filamentosArray.forEach(filamento => {
+            if (grupo.filamentos && Array.isArray(grupo.filamentos)) {
+              grupo.filamentos.forEach(filamento => {
                 totalFilamentQuantity += (filamento.quantidade || 0) * modeloPeca.quantidade;
               });
             }

@@ -35,7 +35,7 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
         gruposImpressao: [{
           id: `grupo-${Date.now()}`,
           nome: 'Grupo Principal',
-          filamentos: [{ principal: '', alternativo: '', quantidade: '' }],
+          filamentos: [], // Initialize with empty array to allow adding any type of insumo
           partes: [],
           tempoImpressao: '',
         }]
@@ -57,10 +57,23 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
         return false;
       }
       if (grupo.filamentos.length === 0) return false;
-      for (const filamento of grupo.filamentos) {
-        if (!filamento.principal || !filamento.quantidade || Number(filamento.quantidade) <= 0) {
-          return false;
+      for (const insumo of grupo.filamentos) {
+        if (insumo.tipo === 'filamento') {
+          if (!insumo.grupoFilamentoId || !insumo.quantidade || Number(insumo.quantidade) <= 0) {
+            return false;
+          }
+        } else { // material, tempo, outros
+          if (!insumo.insumoId || !insumo.quantidade || Number(insumo.quantidade) <= 0) {
+            return false;
+          }
+          if (insumo.tipo === 'material' && !insumo.etapaInstalacao) {
+            return false;
+          }
         }
+      }
+      // If it's a composite piece, ensure parts are present for each group
+      if (peca.isComposta && (!grupo.partes || grupo.partes.length === 0)) {
+        return false;
       }
     }
     
@@ -166,7 +179,6 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
                   grupo={grupo}
                   pecaSku={peca.sku}
                   isComposta={peca.isComposta}
-                  insumos={insumos}
                   onChange={(updatedGrupo) => {
                     const updatedGrupos = [...peca.gruposImpressao];
                     updatedGrupos[index] = updatedGrupo;
@@ -185,7 +197,7 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
                   const novoGrupo = {
                     id: Date.now().toString(),
                     nome: `Grupo ${peca.gruposImpressao.length + 1}`,
-                    filamentos: [{ principal: '', alternativo: '', quantidade: '' }],
+                    filamentos: [], // Initialize with empty array to allow adding any type of insumo
                     partes: [],
                     tempoImpressao: ''
                   };

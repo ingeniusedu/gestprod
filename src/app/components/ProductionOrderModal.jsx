@@ -1,197 +1,84 @@
-import React, { useState, useEffect } from 'react';
-import { X, Printer } from 'lucide-react';
-import { db } from '../services/firebase';
-import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
+"use client";
+
+import { Dialog, Transition } from '@headlessui/react';
+import { Fragment } from 'react';
+import { X } from 'lucide-react';
 
 export default function ProductionOrderModal({ isOpen, onClose, orderData }) {
-  const [productionGroups, setProductionGroups] = useState([]);
-
-  useEffect(() => {
-    if (isOpen && orderData) {
-      processOrderData(orderData);
-    }
-  }, [isOpen, orderData]);
-
-  const fetchPecaDetails = async (pecaId) => {
-    try {
-      const pecaDocRef = doc(db, 'pecas', pecaId);
-      const pecaDocSnap = await getDoc(pecaDocRef);
-      if (pecaDocSnap.exists()) {
-        return { id: pecaDocSnap.id, ...pecaDocSnap.data() };
-      } else {
-        console.warn(`Peca with ID ${pecaId} not found.`);
-        return null;
-      }
-    } catch (error) {
-      console.error(`Error fetching peca details for ${pecaId}:`, error);
-      return null;
-    }
-  };
-
-  const fetchModeloDetails = async (modeloId) => {
-    try {
-      const modeloDocRef = doc(db, 'modelos', modeloId);
-      const modeloDocSnap = await getDoc(modeloDocRef);
-      if (modeloDocSnap.exists()) {
-        const modeloData = { id: modeloDocSnap.id, ...modeloDocSnap.data() };
-        const pecasPromises = modeloData.pecas.map(p => fetchPecaDetails(p.id));
-        modeloData.pecas = (await Promise.all(pecasPromises)).filter(Boolean);
-        return modeloData;
-      } else {
-        console.warn(`Modelo with ID ${modeloId} not found.`);
-        return null;
-      }
-    } catch (error) {
-      console.error(`Error fetching modelo details for ${modeloId}:`, error);
-      return null;
-    }
-  };
-
-  const fetchKitDetails = async (kitId) => {
-    try {
-      const kitDocRef = doc(db, 'kits', kitId);
-      const kitDocSnap = await getDoc(kitDocRef);
-      if (kitDocSnap.exists()) {
-        const kitData = { id: kitDocSnap.id, ...kitDocSnap.data() };
-        const produtosPromises = kitData.produtos.map(async (p) => {
-          if (p.tipo === 'modelo') {
-            return await fetchModeloDetails(p.id);
-          } else if (p.tipo === 'peca') {
-            return await fetchPecaDetails(p.id);
-          }
-          return null;
-        });
-        kitData.produtos = (await Promise.all(produtosPromises)).filter(Boolean);
-        return kitData;
-      } else {
-        console.warn(`Kit with ID ${kitId} not found.`);
-        return null;
-      }
-    } catch (error) {
-      console.error(`Error fetching kit details for ${kitId}:`, error);
-      return null;
-    }
-  };
-
-  const processOrderData = async (pedido) => {
-    const groups = {};
-    const allPecasToPrint = [];
-
-    for (const item of pedido.produtos || []) {
-      if (item.tipo === 'peca') {
-        const pecaDetails = await fetchPecaDetails(item.id);
-        if (pecaDetails) {
-          allPecasToPrint.push({
-            modelo: pecaDetails.nome, // Assuming 'nome' is the display name for a piece
-            corFilamento: pecaDetails.corFilamento,
-            quantidade: item.quantidade,
-          });
-        }
-      } else if (item.tipo === 'modelo') {
-        const modeloDetails = await fetchModeloDetails(item.id);
-        if (modeloDetails && modeloDetails.pecas) {
-          modeloDetails.pecas.forEach(peca => {
-            allPecasToPrint.push({
-              modelo: peca.nome,
-              corFilamento: peca.corFilamento,
-              quantidade: item.quantidade * (peca.quantidade || 1), // Multiply by model quantity
-            });
-          });
-        }
-      } else if (item.tipo === 'kit') {
-        const kitDetails = await fetchKitDetails(item.id);
-        if (kitDetails && kitDetails.produtos) {
-          kitDetails.produtos.forEach(kitProduct => {
-            if (kitProduct.tipo === 'peca') {
-              allPecasToPrint.push({
-                modelo: kitProduct.nome,
-                corFilamento: kitProduct.corFilamento,
-                quantidade: item.quantidade * (kitProduct.quantidade || 1), // Multiply by kit quantity
-              });
-            } else if (kitProduct.tipo === 'modelo' && kitProduct.pecas) {
-              kitProduct.pecas.forEach(peca => {
-                allPecasToPrint.push({
-                  modelo: peca.nome,
-                  corFilamento: peca.corFilamento,
-                  quantidade: item.quantidade * (kitProduct.quantidade || 1) * (peca.quantidade || 1), // Multiply by kit and model quantity
-                });
-              });
-            }
-          });
-        }
-      }
-    }
-
-    allPecasToPrint.forEach(peca => {
-      const key = `${peca.corFilamento}`;
-      if (!groups[key]) {
-        groups[key] = {
-          corFilamento: peca.corFilamento,
-          items: [],
-        };
-      }
-      // Aggregate quantities for the same model and color
-      const existingItemIndex = groups[key].items.findIndex(i => i.modelo === peca.modelo);
-      if (existingItemIndex > -1) {
-        groups[key].items[existingItemIndex].quantidade += peca.quantidade;
-      } else {
-        groups[key].items.push({
-          modelo: peca.modelo,
-          quantidade: peca.quantidade,
-        });
-      }
-    });
-
-    // Convert object to array and sort by filament color
-    const sortedGroups = Object.values(groups).sort((a, b) => a.corFilamento.localeCompare(b.corFilamento));
-    setProductionGroups(sortedGroups);
-  };
-
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 backdrop-blur-sm overflow-y-auto h-full w-full z-50 flex justify-center items-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.25)' }}>
-      <div className="bg-white p-8 rounded-lg shadow-xl max-w-4xl w-full relative">
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 text-gray-600 hover:text-gray-900"
+    <Transition appear show={isOpen} as={Fragment}>
+      <Dialog as="div" className="relative z-10" onClose={onClose}>
+        <Transition.Child
+          as={Fragment}
+          enter="ease-out duration-300"
+          enterFrom="opacity-0"
+          enterTo="opacity-100"
+          leave="ease-in duration-200"
+          leaveFrom="opacity-100"
+          leaveTo="opacity-0"
         >
-          <X className="h-6 w-6" />
-        </button>
-        <h2 className="text-2xl font-bold text-gray-900 mb-6">Ordem de Produção - Pedido #{orderData?.numero}</h2>
+          <div className="fixed inset-0 bg-black bg-opacity-25" />
+        </Transition.Child>
 
-        {productionGroups.length > 0 ? (
-          <div className="space-y-6">
-            {productionGroups.map((group, index) => (
-              <div key={index} className="border border-gray-200 rounded-lg p-4">
-                <h3 className="text-lg font-semibold text-gray-800 mb-3">
-                  Grupo de Impressão: Filamento {group.corFilamento}
-                </h3>
-                <ul className="divide-y divide-gray-200">
-                  {group.items.map((item, itemIndex) => (
-                    <li key={itemIndex} className="py-2 flex justify-between items-center">
-                      <span className="text-gray-700">{item.modelo}</span>
-                      <span className="text-gray-900 font-medium">x{item.quantidade}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+        <div className="fixed inset-0 overflow-y-auto">
+          <div className="flex min-h-full items-center justify-center p-4 text-center">
+            <Transition.Child
+              as={Fragment}
+              enter="ease-out duration-300"
+              enterFrom="opacity-0 scale-95"
+              enterTo="opacity-100 scale-100"
+              leave="ease-in duration-200"
+              leaveFrom="opacity-100 scale-100"
+              leaveTo="opacity-0 scale-95"
+            >
+              <Dialog.Panel className="w-full max-w-3xl transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
+                <Dialog.Title
+                  as="h3"
+                  className="text-lg font-medium leading-6 text-gray-900 flex justify-between items-center"
+                >
+                  Ordem de Produção #{orderData?.numero || ''}
+                  <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                    <X size={20} />
+                  </button>
+                </Dialog.Title>
+                <div className="mt-4">
+                  {orderData ? (
+                    <div className="space-y-4">
+                      <p>Comprador: {orderData.comprador}</p>
+                      <p>Data do Pedido: {orderData.dataCriacao?.toLocaleDateString('pt-BR')}</p>
+                      <p>Previsão de Entrega: {orderData.dataPrevisao?.toLocaleDateString('pt-BR')}</p>
+                      <h4 className="text-md font-medium text-gray-800 mt-4">Produtos:</h4>
+                      <ul className="list-disc list-inside ml-4">
+                        {orderData.produtos?.map((product, index) => (
+                          <li key={index}>
+                            {product.nome} ({product.tipo}) - Quantidade: {product.quantidade}
+                            {/* You can add more details here from the embedded snapshot */}
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="font-bold mt-4">Custo Total: R$ {orderData.custos?.total?.toFixed(2) || '0.00'}</p>
+                      <p className="font-bold">Tempo Total de Impressão: {orderData.tempos?.totalImpressao || 0} min</p>
+                      <p className="font-bold">Tempo Total de Montagem: {orderData.tempos?.totalMontagem || 0} min</p>
+                      <p className="font-bold">Consumo Total de Filamento: {orderData.tempos?.totalConsumoFilamento || 0} g</p>
+                    </div>
+                  ) : (
+                    <p>Nenhum dado de ordem de produção disponível.</p>
+                  )}
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button
+                    type="button"
+                    className="inline-flex justify-center rounded-md border border-transparent bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                    onClick={onClose}
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </Dialog.Panel>
+            </Transition.Child>
           </div>
-        ) : (
-          <p className="text-gray-600">Nenhuma peça encontrada para esta ordem de produção.</p>
-        )}
-
-        <div className="mt-8 flex justify-end">
-          <button
-            onClick={() => window.print()} // Basic print functionality
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-          >
-            <Printer className="h-4 w-4 mr-2" />
-            Imprimir Ordem
-          </button>
         </div>
-      </div>
-    </div>
+      </Dialog>
+    </Transition>
   );
 }
