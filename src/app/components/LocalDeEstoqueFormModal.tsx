@@ -1,47 +1,68 @@
 import React, { useState, useEffect } from 'react';
-import { LocalDeEstoque } from '../types/mapaEstoque';
+import { LocalDeEstoque, LocalDeInsumo } from '../types/mapaEstoque';
 
 interface LocalDeEstoqueFormModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (local: LocalDeEstoque) => void;
-  initialData?: LocalDeEstoque | null;
+  onSave: (local: LocalDeEstoque | LocalDeInsumo, collectionType: 'locaisProdutos' | 'locaisInsumos') => void;
+  initialData?: (LocalDeEstoque | LocalDeInsumo) & { collectionType?: 'locaisProdutos' | 'locaisInsumos' } | null;
 }
 
 const LocalDeEstoqueFormModal: React.FC<LocalDeEstoqueFormModalProps> = ({ isOpen, onClose, onSave, initialData }) => {
   const [nome, setNome] = useState(initialData?.nome || '');
   const [tipo, setTipo] = useState<LocalDeEstoque['tipo']>(initialData?.tipo || 'gaveta');
-  const [dimX, setDimX] = useState(initialData?.dimensoesGrade.x || 1);
-  const [dimY, setDimY] = useState(initialData?.dimensoesGrade.y || 1);
-  const [dimZ, setDimZ] = useState(initialData?.dimensoesGrade.z || 1);
+  const [dimX, setDimX] = useState(initialData?.dimensoesGrade?.x || 1);
+  const [dimY, setDimY] = useState(initialData?.dimensoesGrade?.y || 1);
+  const [dimZ, setDimZ] = useState(initialData?.dimensoesGrade?.z || 1);
+  const [divH, setDivH] = useState(initialData?.divisoes?.h || 1);
+  const [divV, setDivV] = useState(initialData?.divisoes?.v || 1);
+  const [collectionType, setCollectionType] = useState<'locaisProdutos' | 'locaisInsumos'>(initialData?.collectionType || 'locaisProdutos');
 
   useEffect(() => {
     if (initialData) {
       setNome(initialData.nome);
       setTipo(initialData.tipo);
-      setDimX(initialData.dimensoesGrade.x);
-      setDimY(initialData.dimensoesGrade.y);
-      setDimZ(initialData.dimensoesGrade.z);
+      if (initialData.dimensoesGrade) {
+        setDimX(initialData.dimensoesGrade.x);
+        setDimY(initialData.dimensoesGrade.y);
+        setDimZ(initialData.dimensoesGrade.z);
+      }
+      if (initialData.divisoes) {
+        setDivH(initialData.divisoes.h);
+        setDivV(initialData.divisoes.v);
+      }
+      if (initialData.collectionType) {
+        setCollectionType(initialData.collectionType);
+      }
     } else {
       setNome('');
       setTipo('gaveta');
       setDimX(1);
       setDimY(1);
       setDimZ(1);
+      setDivH(1);
+      setDivV(1);
+      setCollectionType('locaisProdutos');
     }
   }, [initialData]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const local: LocalDeEstoque = {
+    let local: Partial<LocalDeEstoque | LocalDeInsumo> = {
       nome,
       tipo,
-      dimensoesGrade: { x: dimX, y: dimY, z: dimZ },
     };
+
+    if (tipo === 'gaveta') {
+      local.dimensoesGrade = { x: dimX, y: dimY, z: dimZ };
+    } else if (tipo === 'prateleira' || tipo === 'armario') {
+      local.divisoes = { h: divH, v: divV };
+    }
+
     if (initialData?.id) {
       local.id = initialData.id;
     }
-    onSave(local);
+    onSave(local as LocalDeEstoque | LocalDeInsumo, collectionType);
   };
 
   if (!isOpen) return null;
@@ -80,37 +101,77 @@ const LocalDeEstoqueFormModal: React.FC<LocalDeEstoqueFormModalProps> = ({ isOpe
             </select>
           </div>
           <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700">Dimensões da Grade (X x Y x Z)</label>
-            <div className="mt-1 grid grid-cols-3 gap-3">
-              <input
-                type="number"
-                placeholder="X"
-                className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={dimX}
-                onChange={(e) => setDimX(parseInt(e.target.value) || 1)}
-                min="1"
-                required
-              />
-              <input
-                type="number"
-                placeholder="Y"
-                className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={dimY}
-                onChange={(e) => setDimY(parseInt(e.target.value) || 1)}
-                min="1"
-                required
-              />
-              <input
-                type="number"
-                placeholder="Z"
-                className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={dimZ}
-                onChange={(e) => setDimZ(parseInt(e.target.value) || 1)}
-                min="1"
-                required
-              />
-            </div>
+            <label htmlFor="collectionType" className="block text-sm font-medium text-gray-700">Tipo de Coleção</label>
+            <select
+              id="collectionType"
+              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              value={collectionType}
+              onChange={(e) => setCollectionType(e.target.value as 'locaisProdutos' | 'locaisInsumos')}
+              required
+            >
+              <option value="locaisProdutos">Produtos</option>
+              <option value="locaisInsumos">Insumos</option>
+            </select>
           </div>
+          {tipo === 'gaveta' && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Dimensões da Grade (X x Y x Z)</label>
+              <div className="mt-1 grid grid-cols-3 gap-3">
+                <input
+                  type="number"
+                  placeholder="X"
+                  className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  value={dimX}
+                  onChange={(e) => setDimX(parseInt(e.target.value) || 1)}
+                  min="1"
+                  required={tipo === 'gaveta'}
+                />
+                <input
+                  type="number"
+                  placeholder="Y"
+                  className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  value={dimY}
+                  onChange={(e) => setDimY(parseInt(e.target.value) || 1)}
+                  min="1"
+                  required={tipo === 'gaveta'}
+                />
+                <input
+                  type="number"
+                  placeholder="Z"
+                  className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  value={dimZ}
+                  onChange={(e) => setDimZ(parseInt(e.target.value) || 1)}
+                  min="1"
+                  required={tipo === 'gaveta'}
+                />
+              </div>
+            </div>
+          )}
+          {(tipo === 'prateleira' || tipo === 'armario') && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Divisões (Linhas x Colunas)</label>
+              <div className="mt-1 grid grid-cols-2 gap-3">
+                <input
+                  type="number"
+                  placeholder="Linhas (h)"
+                  className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  value={divH}
+                  onChange={(e) => setDivH(parseInt(e.target.value) || 1)}
+                  min="1"
+                  required={tipo === 'prateleira' || tipo === 'armario'}
+                />
+                <input
+                  type="number"
+                  placeholder="Colunas (v)"
+                  className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  value={divV}
+                  onChange={(e) => setDivV(parseInt(e.target.value) || 1)}
+                  min="1"
+                  required={tipo === 'prateleira' || tipo === 'armario'}
+                />
+              </div>
+            </div>
+          )}
           <div className="flex justify-end space-x-3">
             <button
               type="button"

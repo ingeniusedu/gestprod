@@ -1,14 +1,45 @@
-export interface LocalDeEstoque {
+export interface LocalProduto {
   id?: string;
   nome: string;
   tipo: 'gaveta' | 'prateleira' | 'armario' | 'outro';
-  dimensoesGrade: {
+  dimensoesGrade?: {
     x: number;
     y: number;
     z: number;
   };
+  divisoes?: {
+    h: number;
+    v: number;
+  };
   createdAt?: Date;
   updatedAt?: Date;
+  collectionType?: 'locaisProdutos';
+}
+
+export interface LocalInsumo {
+  id?: string;
+  nome: string;
+  tipo: 'gaveta' | 'prateleira' | 'armario' | 'outro';
+  dimensoesGrade?: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  divisoes?: {
+    h: number;
+    v: number;
+  };
+  createdAt?: Date;
+  updatedAt?: Date;
+  collectionType?: 'locaisInsumos';
+  ocupantes?: OcupanteDivisao[];
+}
+
+export interface OcupanteDivisao {
+  recipienteId: string;
+  divisao: { h: number; v: number };
+  insumoId: string;
+  quantidade: number;
 }
 
 export interface Recipiente {

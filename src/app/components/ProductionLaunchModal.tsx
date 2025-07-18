@@ -3,7 +3,7 @@ import { Dialog, Transition } from '@headlessui/react';
 import { X } from 'lucide-react';
 import { ProductionGroup, Parte, EstoqueLancamento, Peca, Modelo } from '../types';
 import { db } from '../services/firebase';
-import { collection, addDoc, updateDoc, doc, getDoc, getDocs } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, doc, getDoc, getDocs, Timestamp } from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
 import ProductionExcessStockModal from './ProductionExcessStockModal'; // Import the new modal
 
@@ -98,7 +98,7 @@ export default function ProductionLaunchModal({
         const pedidoData = pedidoSnap.data();
         const updatedGroups = pedidoData.productionGroups.map((g: ProductionGroup) => {
           if (g.id === group.id) {
-            const newGroup = { ...g, status: newGroupStatus, completedAt: new Date() };
+            const newGroup = { ...g, status: newGroupStatus, completedAt: Timestamp.fromDate(new Date()) };
             // console.log(`[ProductionLaunchModal] handleLaunchProduction: Updating group ${group.id} to status: ${newGroup.status}`); // Removed debug log
             return newGroup;
           }
@@ -117,13 +117,17 @@ export default function ProductionLaunchModal({
           }
           const estoqueLancamentoPerda: EstoqueLancamento = {
             id: uuidv4(),
-            tipoProduto: 'parte',
+            tipoProduto: 'partes',
             produtoId: part.id,
-            quantidade: part.quantidadePerdida,
             tipoMovimento: 'saida',
-            data: new Date(),
+            data: Timestamp.fromDate(new Date()),
             usuario: 'Sistema de Produção',
             observacao: `Perda registrada durante a produção do Pedido #${group.pedidoNumero}, Grupo de Impressão ${group.sourceName}`,
+            locais: [{
+              recipienteId: 'unknown', // Placeholder, as we don't have recipient info for losses here
+              quantidade: part.quantidadePerdida,
+              localId: 'unknown', // Placeholder
+            }],
           };
           await addDoc(collection(db, 'lancamentosEstoque'), estoqueLancamentoPerda);
         }

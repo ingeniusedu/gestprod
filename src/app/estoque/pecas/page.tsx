@@ -4,11 +4,11 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Search, Puzzle, Edit, Trash2, Settings, Spool, List, Grid } from 'lucide-react';
 import PecaFormModal from '../../components/PecaFormModal';
 import ServiceCostModal from '../../components/ServiceCostModal';
-import { db, auth, addParte, updateParte, addPeca, updatePeca, deletePecas, deletePeca, getLocaisDeEstoque, getRecipientes } from '../../services/firebase';
+import { db, auth, addParte, updateParte, addPeca, updatePeca, deletePecas, deletePeca, getLocaisProdutos, getRecipientes } from '../../services/firebase';
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
-import { Peca, PosicaoEstoque, Insumo, Parte, GrupoImpressao, PecaInsumo, Produto, Modelo, Kit } from '../../types';
-import { LocalDeEstoque, Recipiente } from '../../types/mapaEstoque';
+import { Peca, PosicaoEstoque, Insumo, Parte, GrupoImpressao, PecaInsumo, Produto, Modelo, Kit, PecaParte } from '../../types';
+import { LocalProduto, Recipiente } from '../../types/mapaEstoque';
 import EstoqueLancamentoModal from '../../components/EstoqueLancamentoModal'; // Ensure this import is present
 
 export default function PecasPage({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) {
@@ -17,7 +17,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
   const [isServiceCostModalOpen, setIsServiceCostModalOpen] = useState(false);
   const [isEstoqueLancamentoModalOpen, setIsEstoqueLancamentoModalOpen] = useState(false); // Added state for EstoqueLancamentoModal
   const [recipienteToEdit, setRecipienteToEdit] = useState<Recipiente | null>(null); // Added state for recipient to edit
-  const [localToEdit, setLocalToEdit] = useState<LocalDeEstoque | null>(null); // Added state for local to edit
+  const [localToEdit, setLocalToEdit] = useState<LocalProduto | null>(null); // Added state for local to edit
   const [pecaToEdit, setPecaToEdit] = useState<Peca | null>(null);
   const [pecas, setPecas] = useState<Peca[]>([]);
   const [selectedPecas, setSelectedPecas] = useState<string[]>([]);
@@ -26,7 +26,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
   const [modelos, setModelos] = useState<Produto[]>([]); // Added state for modelos
   const [kits, setKits] = useState<Produto[]>([]);       // Added state for kits
   const [allProducts, setAllProducts] = useState<Produto[]>([]); // Added state for all products
-  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalDeEstoque[]>([]);
+  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalProduto[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
   const [gruposDeFilamento, setGruposDeFilamento] = useState<any[]>([]); // Using any for now
   const [serviceCosts, setServiceCosts] = useState({
@@ -57,9 +57,9 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       const pecasCollection = collection(db, 'pecas');
       const insumosCollection = collection(db, 'insumos');
       const partesCollection = collection(db, 'partes');
-      const modelosCollection = collection(db, 'modelos'); // Added
-      const kitsCollection = collection(db, 'kits');       // Added
-      const locaisDeEstoqueCollection = collection(db, 'locaisDeEstoque');
+      const modelosCollection = collection(db, 'modelos');
+      const kitsCollection = collection(db, 'kits');
+      const locaisDeEstoqueCollection = collection(db, 'locaisProdutos');
       const recipientesCollection = collection(db, 'recipientes');
       const gruposDeFilamentoCollection = collection(db, 'gruposDeFilamento');
 
@@ -67,8 +67,8 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         pecasSnapshot,
         insumosSnapshot,
         partesSnapshot,
-        modelosSnapshot, // Added
-        kitsSnapshot,    // Added
+        modelosSnapshot,
+        kitsSnapshot,
         locaisSnapshot,
         recipientesSnapshot,
         gruposDeFilamentoSnapshot
@@ -76,8 +76,8 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         getDocs(pecasCollection),
         getDocs(insumosCollection),
         getDocs(partesCollection),
-        getDocs(modelosCollection), // Added
-        getDocs(kitsCollection),    // Added
+        getDocs(modelosCollection),
+        getDocs(kitsCollection),
         getDocs(locaisDeEstoqueCollection),
         getDocs(recipientesCollection),
         getDocs(gruposDeFilamentoCollection)
@@ -109,7 +109,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         return {
           id: doc.id,
           nome: data.nome || '',
-          sku: data.nome || '', // Insumos might not have SKU, using name as fallback for Produto interface
+          sku: data.nome || '',
           tipo: data.tipo || '',
           unidade: data.unidade || '',
           custoPorUnidade: data.custoPorUnidade || 0,
@@ -155,7 +155,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
           posicoesEstoque: posicoes,
           estoqueTotal,
           tipoProduto: 'modelo'
-        } as Produto; // Cast to Produto
+        } as Produto;
       });
 
       const fetchedKits = kitsSnapshot.docs.map(doc => {
@@ -173,14 +173,14 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
           posicoesEstoque: posicoes,
           estoqueTotal,
           tipoProduto: 'kit'
-        } as Produto; // Cast to Produto
+        } as Produto;
       });
 
       setPecas(fetchedPecas);
       setInsumos(fetchedInsumos);
       setPartes(fetchedPartes);
-      setModelos(fetchedModelos); // These are already Produto[] now
-      setKits(fetchedKits);       // These are already Produto[] now
+      setModelos(fetchedModelos);
+      setKits(fetchedKits);
 
       setAllProducts([
         ...fetchedPecas,
@@ -190,7 +190,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         ...fetchedKits,
       ] as Produto[]);
 
-      setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalDeEstoque[]);
+      setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalProduto[]);
       setRecipientes(recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[]);
       setGruposDeFilamento(gruposDeFilamentoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
 
@@ -209,12 +209,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
   }, [propSearchTerm]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, user => {
-      if (user) {
-        fetchAllData();
-      }
-    });
-    return () => unsubscribe();
+    fetchAllData();
   }, []);
 
   const getLocalName = (recipienteId: string) => {
@@ -232,14 +227,16 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
     return uniqueLocations.join(', ');
   };
 
-  const filteredPecas = pecas.filter(peca => {
-    const pecaLocal = getLocalString(peca.posicoesEstoque || []);
-    return (
-      peca.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      peca.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      pecaLocal.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  });
+  const filteredPecas = pecas
+    .filter(peca => {
+      const pecaLocal = getLocalString(peca.posicoesEstoque || []);
+      return (
+        peca.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        peca.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        pecaLocal.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    })
+    .sort((a, b) => a.sku.localeCompare(b.sku));
 
   const openPecaModal = (peca: Peca | null = null) => {
     setPecaToEdit(peca);
@@ -249,20 +246,19 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
   const closePecaModal = () => {
     setIsPecaModalOpen(false);
     setPecaToEdit(null);
-    fetchAllData(); // Refresh data after modal close
+    fetchAllData();
   };
 
   const openServiceCostModal = () => setIsServiceCostModalOpen(true);
   const closeServiceCostModal = () => {
     setIsServiceCostModalOpen(false);
-    fetchAllData(); // Re-fetch costs
+    fetchAllData();
   };
 
   const handleSavePeca = async (pecaData: Peca) => {
     try {
       let pecaDataComPartes = { ...pecaData };
 
-      // If it's a simple part, ensure it has a default "parte"
       if (!pecaData.isComposta && pecaData.gruposImpressao.length > 0) {
         const gruposComPartesDefault = pecaData.gruposImpressao.map((grupo: GrupoImpressao) => {
           if (!grupo.partes || grupo.partes.length === 0) {
@@ -272,8 +268,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
                 nome: pecaData.nome,
                 identificador: '00',
                 quantidade: 1,
-                sku: `${pecaData.sku}-00`,
-                isNova: true,
+                parteId: '',
               }]
             };
           }
@@ -282,25 +277,24 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         pecaDataComPartes = { ...pecaDataComPartes, gruposImpressao: gruposComPartesDefault };
       }
 
-      // Processar e salvar partes primeiro
       const updatedGruposImpressao = await Promise.all(
         pecaDataComPartes.gruposImpressao.map(async (grupo: GrupoImpressao) => {
           const updatedPartes = await Promise.all(
-            (grupo.partes || []).map(async (parte: Parte) => {
-              if (parte.isNova) {
+            (grupo.partes || []).map(async (pecaParte: PecaParte) => {
+              if (!pecaParte.parteId) {
                 const novaParteData = {
-                  nome: parte.nome,
-                  identificador: parte.identificador,
-                  sku: parte.sku,
+                  nome: pecaParte.nome || '',
+                  identificador: pecaParte.identificador || '',
+                  sku: `${pecaData.sku}-${pecaParte.identificador || '00'}`,
                   estoque: 0,
                   local: 'Estoque Geral',
                   createdAt: new Date(),
                   updatedAt: new Date(),
                 };
                 const addedParte = await addParte(novaParteData);
-                return { ...parte, parteId: addedParte.id, isNova: false };
+                return { ...pecaParte, parteId: addedParte.id };
               }
-              return parte; // Parte existente já tem parteId
+              return pecaParte;
             })
           );
           return { ...grupo, partes: updatedPartes };
@@ -309,7 +303,6 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
 
       const pecaFinal = { ...pecaDataComPartes, gruposImpressao: updatedGruposImpressao };
 
-      // Calcular custo da peça
       let totalFilamentCost = 0;
       let totalImpressionTime = 0;
       
@@ -348,14 +341,15 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
     }
   };
 
-  const handleDeletePeca = async (id: string) => {
+  const handleDeletePeca = async (id: string | undefined) => {
+    if (!id) return;
     if (window.confirm("Tem certeza que deseja deletar esta peça? Esta ação não pode ser desfeita.")) {
       try {
         await deletePeca(id);
         await fetchAllData();
         setSelectedPecas(prev => prev.filter(pecaId => pecaId !== id));
       } catch (error) {
-      console.error("Error deleting peca: ", error);
+        console.error("Error deleting peca: ", error);
       }
     }
   };
@@ -372,15 +366,17 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
     }
   };
 
-  const handleSelectPeca = (id: string) => {
-    setSelectedPecas(prev =>
-      prev.includes(id) ? prev.filter(pecaId => pecaId !== id) : [...prev, id]
-    );
+  const handleSelectPeca = (id: string | undefined) => {
+    if (id) {
+      setSelectedPecas(prev =>
+        prev.includes(id) ? prev.filter(pecaId => pecaId !== id) : [...prev, id]
+      );
+    }
   };
 
   const handleSelectAllPecas = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
-      setSelectedPecas(filteredPecas.map(p => p.id!));
+      setSelectedPecas(filteredPecas.map(p => p.id).filter((id): id is string => id !== undefined));
     } else {
       setSelectedPecas([]);
     }
@@ -394,17 +390,17 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
     }, 0) || 0;
     const totalTempoMontagem = Number(peca.tempoMontagem) || 0;
     const totalPartes = peca.gruposImpressao?.reduce((acc: number, g: GrupoImpressao) => {
-        const partesInGroup = g.partes?.reduce((pAcc: number, p: { nome: string; identificador: string; quantidade: number; isNova?: boolean; sku?: string; }) => pAcc + (Number(p.quantidade) || 0), 0) || 0;
+        const partesInGroup = g.partes?.reduce((pAcc: number, p: PecaParte) => pAcc + (Number(p.quantidade) || 0), 0) || 0;
         return acc + partesInGroup;
-    }, 0) || 0;
+    }, 0);
 
     return (
-      <div key={peca.id} className={`bg-white shadow rounded-lg p-6 hover:shadow-md transition-shadow relative group ${selectedPecas.includes(peca.id!) ? 'ring-2 ring-blue-500' : ''}`}>
+      <div key={peca.id} className={`bg-white shadow rounded-lg p-6 hover:shadow-md transition-shadow relative group ${peca.id && selectedPecas.includes(peca.id) ? 'ring-2 ring-blue-500' : ''}`}>
         <input
           type="checkbox"
           className="absolute top-2 left-2 h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity"
-          checked={selectedPecas.includes(peca.id!)}
-          onChange={() => handleSelectPeca(peca.id!)}
+          checked={!!peca.id && selectedPecas.includes(peca.id)}
+          onChange={() => handleSelectPeca(peca.id)}
         />
         <div className="flex justify-between items-start mb-4">
           <div>
@@ -429,9 +425,10 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
                     const grupoDeFilamento = gruposDeFilamento.find(g => g.id === filamento.grupoFilamentoId);
                     const colorName = grupoDeFilamento ? grupoDeFilamento.cor : 'Default';
                     const colorStyle = getColorStyle(colorName || 'Default');
+                    const titleText = grupoDeFilamento?.nome || `Filamento desconhecido (ID: ${filamento.grupoFilamentoId})`;
 
                     return (
-                      <div key={`${groupIndex}-${fIndex}`} title={grupoDeFilamento?.nome || 'Grupo não encontrado'}>
+                      <div key={`${groupIndex}-${fIndex}`} title={titleText}>
                         <Spool
                           className="h-6 w-6"
                           style={{ color: colorStyle }}
@@ -462,7 +459,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
             <Edit className="h-5 w-5" />
           </button>
           <button
-            onClick={() => handleDeletePeca(peca.id!)}
+            onClick={() => handleDeletePeca(peca.id)}
             className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
             title="Deletar Peça"
           >
@@ -481,17 +478,17 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
     }, 0) || 0;
     const totalTempoMontagem = Number(peca.tempoMontagem) || 0;
     const totalPartes = peca.gruposImpressao?.reduce((acc: number, g: GrupoImpressao) => {
-        const partesInGroup = g.partes?.reduce((pAcc: number, p: { nome: string; identificador: string; quantidade: number; isNova?: boolean; sku?: string; }) => pAcc + (Number(p.quantidade) || 0), 0) || 0;
+        const partesInGroup = g.partes?.reduce((pAcc: number, p: PecaParte) => pAcc + (Number(p.quantidade) || 0), 0) || 0;
         return acc + partesInGroup;
-    }, 0) || 0;
+    }, 0);
 
     return (
-      <tr key={peca.id} className={`hover:bg-gray-50 ${selectedPecas.includes(peca.id!) ? 'bg-blue-50' : ''}`}>
+      <tr key={peca.id} className={`hover:bg-gray-50 ${peca.id && selectedPecas.includes(peca.id) ? 'bg-blue-50' : ''}`}>
         <td className="px-6 py-4 whitespace-nowrap">
           <input
             type="checkbox"
-            checked={selectedPecas.includes(peca.id!)}
-            onChange={() => handleSelectPeca(peca.id!)}
+            checked={!!peca.id && selectedPecas.includes(peca.id)}
+            onChange={() => handleSelectPeca(peca.id)}
           />
         </td>
         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{peca.sku}</td>
@@ -507,13 +504,13 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
             >
               <Edit className="h-5 w-5" />
             </button>
-            <button
-              onClick={() => handleDeletePeca(peca.id!)}
-              className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
-              title="Deletar Peça"
-            >
-              <Trash2 className="h-5 w-5" />
-            </button>
+          <button
+            onClick={() => handleDeletePeca(peca.id)}
+            className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
+            title="Deletar Peça"
+          >
+            <Trash2 className="h-5 w-5" />
+          </button>
           </div>
         </td>
       </tr>
@@ -562,7 +559,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
           }}
           initialTipoProduto="peca"
           recipiente={recipienteToEdit}
-          local={localToEdit}
+          local={localToEdit as any}
         />
       </>
     );

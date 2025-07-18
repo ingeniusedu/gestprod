@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { db } from '../services/firebase';
 import { collection, doc, getDocs, getDoc, writeBatch, FieldValue, addDoc } from 'firebase/firestore';
 import Select from 'react-select';
-import { LocalDeEstoque, Recipiente } from '../types/mapaEstoque';
-import { PosicaoEstoque, Produto, EstoqueLancamento } from '../types';
+import { LocalProduto, LocalInsumo, Recipiente } from '../types/mapaEstoque';
+import { PosicaoEstoque, Produto, LancamentoProduto, LancamentoInsumo } from '../types';
 import RecipienteFormModal from './RecipienteFormModal';
 import { Plus, X } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
@@ -15,8 +15,8 @@ interface EstoqueLancamentoModalProps {
   onLancamentoSuccess: () => void;
   initialTipoProduto?: string;
   recipiente?: Recipiente | null;
-  local?: LocalDeEstoque | null;
-  initialData?: EstoqueLancamento | null; // Add initialData prop
+  local?: LocalProduto | LocalInsumo | null;
+  initialData?: LancamentoProduto | LancamentoInsumo | null;
 }
 
 // Simplified selected item state. We handle one item at a time for clarity.
@@ -44,10 +44,10 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
     return type;
   };
 
-  const [tipoProduto, setTipoProduto] = useState(singularizeType(initialTipoProduto || initialData?.tipoProduto || ''));
+  const [tipoProduto, setTipoProduto] = useState(singularizeType(initialTipoProduto || (initialData && 'tipoProduto' in initialData ? initialData.tipoProduto : (initialData && 'tipoInsumo' in initialData ? initialData.tipoInsumo : ''))));
   const [selectedItem, setSelectedItem] = useState<SelectedItem | null>(null);
 
-  const getValidTipoMovimento = (data: EstoqueLancamento | null | undefined): 'entrada' | 'saida' | 'ajuste' => {
+  const getValidTipoMovimento = (data: LancamentoProduto | LancamentoInsumo | null | undefined): 'entrada' | 'saida' | 'ajuste' => {
     if (data && (data.tipoMovimento === 'entrada' || data.tipoMovimento === 'saida' || data.tipoMovimento === 'ajuste')) {
       return data.tipoMovimento;
     }
@@ -55,21 +55,21 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
   };
 
   const [tipoMovimento, setTipoMovimento] = useState<'entrada' | 'saida' | 'ajuste'>(getValidTipoMovimento(initialData));
-  const [observacao, setObservacao] = useState(initialData?.observacao || '');
+  const [observacao, setObservacao] = useState(initialData && 'observacao' in initialData ? initialData.observacao : (initialData && 'detalhes' in initialData ? initialData.detalhes : ''));
   const [produtosOptions, setProdutosOptions] = useState<any[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   // State for the new stock location form
-  const [lancamentoLocais, setLancamentoLocais] = useState<{ id: string; localId: string; recipienteId: string; divisao: { h: number; v: number } | null; quantidade: number; selectedLocalDimensions: { x: number; y: number; z: number } | null; }[]>([]);
+  const [lancamentoLocais, setLancamentoLocais] = useState<{ id: string; localId: string; recipienteId?: string; divisao: { h: number; v: number } | null; quantidade: number; selectedLocalDimensions: { x: number; y: number; z: number } | null; }[]>([]);
   const [currentLocalId, setCurrentLocalId] = useState(''); // For the "Add new location" flow
   const [currentRecipienteId, setCurrentRecipienteId] = useState(''); // For the "Add new location" flow
   const [currentDivisao, setCurrentDivisao] = useState<{ h: number; v: number } | null>(null); // For the "Add new location" flow
   const [currentQuantidade, setCurrentQuantidade] = useState(1); // For the "Add new location" flow
   const [currentSelectedLocalDimensions, setCurrentSelectedLocalDimensions] = useState<{ x: number; y: number; z: number } | null>(null); // For the "Add new location" flow
 
-  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalDeEstoque[]>([]);
+  const [locaisDeEstoque, setLocaisDeEstoque] = useState<(LocalProduto | LocalInsumo)[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
   const [isRecipienteModalOpen, setIsRecipienteModalOpen] = useState(false);
   const [occupiedRecipientsProductMap, setOccupiedRecipientsProductMap] = useState<Map<string, string | null>>(new Map());
@@ -77,19 +77,18 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
   const [allProducts, setAllProducts] = useState<Produto[]>([]); // New state to store all products
 
   const fetchAllProducts = async (): Promise<Produto[]> => {
-    const productTypes = ['partes', 'pecas', 'modelos', 'kits', 'insumos'];
+    const productCollections = ['partes', 'pecas', 'modelos', 'kits', 'insumos'];
     let allFetchedProducts: Produto[] = [];
-    for (const type of productTypes) {
+    for (const collectionName of productCollections) {
       try {
-        const querySnapshot = await getDocs(collection(db, type));
-        const productsOfType = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Produto[];
+        const querySnapshot = await getDocs(collection(db, collectionName));
+        const productsOfType = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), tipoProduto: singularizeType(collectionName) })) as Produto[];
         allFetchedProducts = allFetchedProducts.concat(productsOfType);
       } catch (err) {
-        console.error(`Erro ao buscar produtos do tipo ${type}:`, err);
-        // Continue even if one type fails
+        console.error(`Erro ao buscar produtos da coleção ${collectionName}:`, err);
       }
     }
-    return allFetchedProducts; // Return the fetched data
+    return allFetchedProducts;
   };
 
   // Main useEffect for modal initialization and data fetching
@@ -103,59 +102,57 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
       setLoading(true);
       setError('');
       try {
-        const [locaisSnapshot, recipientesSnapshot, allProductsData] = await Promise.all([
-          getDocs(collection(db, 'locaisDeEstoque')),
+        const [locaisProdutosSnapshot, locaisInsumosSnapshot, recipientesSnapshot, allProductsData] = await Promise.all([
+          getDocs(collection(db, 'locaisProdutos')),
+          getDocs(collection(db, 'locaisInsumos')),
           getDocs(collection(db, 'recipientes')),
           fetchAllProducts(),
         ]);
 
-        const fetchedLocais = locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalDeEstoque[];
-        setLocaisDeEstoque(fetchedLocais);
+        const fetchedLocaisProdutos = locaisProdutosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), collectionType: 'locaisProdutos' })) as LocalProduto[];
+        const fetchedLocaisInsumos = locaisInsumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), collectionType: 'locaisInsumos' })) as LocalInsumo[];
+        setLocaisDeEstoque([...fetchedLocaisProdutos, ...fetchedLocaisInsumos]);
         setRecipientes(recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[]);
-        setAllProducts(allProductsData); // Set allProducts here
+        setAllProducts(allProductsData);
 
-        // Initialize modal state with fetched data
-        const initialType = singularizeType(initialTipoProduto || initialData?.tipoProduto || '');
+        const initialType = singularizeType(initialTipoProduto || (initialData && 'tipoProduto' in initialData ? initialData.tipoProduto : (initialData && 'tipoInsumo' in initialData ? initialData.tipoInsumo : '')));
         setTipoProduto(initialType);
         setTipoMovimento(getValidTipoMovimento(initialData));
-        setObservacao(initialData?.observacao || '');
+        setObservacao(initialData && 'observacao' in initialData ? initialData.observacao : (initialData && 'detalhes' in initialData ? initialData.detalhes : ''));
 
-        // Fetch product options based on initialType if available
         let productOptions: any[] = [];
         if (initialType) {
-          productOptions = await fetchProdutos(initialType); // This will set produtosOptions
+          productOptions = await fetchProdutos(initialType);
         }
 
-        // If there's initialData, find the product from the already fetched options
-        if (initialData?.produtoId && productOptions.length > 0) {
-          const selectedOption = productOptions.find(opt => opt.value === initialData.produtoId);
-          if (selectedOption) {
-            handleProductSelect(selectedOption);
+        if (initialData) {
+          const initialProductId = 'produtoId' in initialData ? initialData.produtoId : ('insumoId' in initialData ? initialData.insumoId : null);
+          if (initialProductId && productOptions.length > 0) {
+            const selectedOption = productOptions.find(opt => opt.value === initialProductId);
+            if (selectedOption) {
+              handleProductSelect(selectedOption);
+            }
           }
-        }
-
-        // Pre-fill from stock map context or initialData
-        if (initialData?.locais && initialData.locais.length > 0) {
-          const initialLancamentoLocais = initialData.locais.map(loc => {
-            const associatedLocal = fetchedLocais.find(l => l.id === loc.localId);
-            return {
-              id: uuidv4(), // Generate a new ID for the UI element
-              localId: loc.localId,
-              recipienteId: loc.recipienteId,
-              divisao: loc.divisao || null,
-              quantidade: loc.quantidade,
-              selectedLocalDimensions: associatedLocal?.dimensoesGrade || null,
-            };
-          });
-          setLancamentoLocais(initialLancamentoLocais);
+          if (initialData.locais && initialData.locais.length > 0) {
+            const initialLancamentoLocais = initialData.locais.map(loc => {
+              const associatedLocal = locaisDeEstoque.find(l => l.id === loc.localId);
+              return {
+                id: uuidv4(),
+                localId: loc.localId!,
+                recipienteId: loc.recipienteId,
+                divisao: loc.divisao || null,
+                quantidade: loc.quantidade,
+                selectedLocalDimensions: associatedLocal?.dimensoesGrade || null,
+              };
+            });
+            setLancamentoLocais(initialLancamentoLocais);
+          }
         } else if (recipiente && local) {
-          // If coming from stock map, pre-fill the first entry
           setCurrentLocalId(local.id || '');
           setCurrentRecipienteId(recipiente.id || '');
           if (local.dimensoesGrade) {
             setCurrentSelectedLocalDimensions(local.dimensoesGrade);
           }
-          // Find the product and division to pre-fill from allProductsData (the fetched data)
           const productInRecipiente = allProductsData.find((p: Produto) =>
             p.posicoesEstoque?.some((pos: PosicaoEstoque) => pos.recipienteId === recipiente.id && pos.quantidade > 0)
           );
@@ -164,19 +161,18 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
             const pos = productInRecipiente.posicoesEstoque?.find((pos: PosicaoEstoque) => pos.recipienteId === recipiente.id && pos.quantidade > 0);
             if (pos) {
               setCurrentDivisao(pos.divisao || { h: 0, v: 0 });
-              // Set the selected item
               const currentEstoque = productInRecipiente.posicoesEstoque?.reduce((acc: number, p: PosicaoEstoque) => acc + p.quantidade, 0) || 0;
               setSelectedItem({
                 id: productInRecipiente.id,
-                nome: `${productInRecipiente.sku} - ${productInRecipiente.nome}`,
-                sku: productInRecipiente.sku,
+                nome: `${productInRecipiente.sku || ''} - ${productInRecipiente.nome}`,
+                sku: productInRecipiente.sku || '',
                 tipoProduto: productInRecipiente.tipoProduto,
                 posicoesEstoque: productInRecipiente.posicoesEstoque || [],
                 currentEstoque: currentEstoque,
               });
             }
           }
-          setCurrentQuantidade(1); // Reset quantity for a new entry
+          setCurrentQuantidade(1);
         }
 
       } catch (err) {
@@ -246,28 +242,53 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
     setLoading(true);
     setError('');
     try {
-      const collectionName = `${type}s`;
-      const querySnapshot = await getDocs(collection(db, collectionName));
-      const options = querySnapshot.docs.map(doc => {
-        const data = doc.data();
-        const posicoes = data.posicoesEstoque || [];
-        const currentEstoque = posicoes.reduce((acc: number, pos: PosicaoEstoque) => acc + (pos.quantidade || 0), 0); // Only use posicoesEstoque
-        return {
-          value: doc.id,
-          label: `${data.sku || ''} - ${data.nome || ''}`.trim(),
-          currentEstoque,
-          posicoesEstoque: posicoes,
-          tipoProduto: type, // Revert to singular type here
-          sku: data.sku || '',
-        };
-      });
+      let collectionName: string;
+      let options: any[] = [];
+
+      if (['parte', 'peca', 'modelo', 'kit'].includes(type)) {
+        collectionName = `${type}s`;
+        const querySnapshot = await getDocs(collection(db, collectionName));
+        options = querySnapshot.docs.map(doc => {
+          const data = doc.data();
+          const posicoes = data.posicoesEstoque || [];
+          const currentEstoque = posicoes.reduce((acc: number, pos: PosicaoEstoque) => acc + (pos.quantidade || 0), 0);
+          return {
+            value: doc.id,
+            label: `${data.sku || ''} - ${data.nome || ''}`.trim(),
+            currentEstoque,
+            posicoesEstoque: posicoes,
+            tipoProduto: type,
+            sku: data.sku || '',
+          };
+        });
+      } else if (type === 'insumo') {
+        collectionName = 'insumos';
+        const querySnapshot = await getDocs(collection(db, collectionName));
+        options = querySnapshot.docs.map(doc => {
+          const data = doc.data();
+          const posicoes = data.posicoesEstoque || [];
+          const currentEstoque = posicoes.reduce((acc: number, pos: PosicaoEstoque) => acc + (pos.quantidade || 0), 0);
+          return {
+            value: doc.id,
+            label: `${data.nome || ''} (${data.tipo || ''})`.trim(),
+            currentEstoque,
+            posicoesEstoque: posicoes,
+            tipoProduto: type,
+            sku: data.nome || '', // Using nome as sku for sorting/display consistency
+          };
+        });
+      } else {
+        setError("Tipo de produto inválido.");
+        return [];
+      }
+
       options.sort((a, b) => a.sku.localeCompare(b.sku));
       setProdutosOptions(options);
-      return options; // Return options for chaining
+      return options;
     } catch (err) {
       console.error("Erro ao buscar produtos:", err);
       setError("Erro ao carregar a lista de produtos.");
-      return []; // Return empty array on error
+      return [];
     } finally {
       setLoading(false);
     }
@@ -303,7 +324,9 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
 
     // Validate each entry in lancamentoLocais
     for (const entry of lancamentoLocais) {
-      if (!entry.localId || !entry.recipienteId || entry.divisao === null || entry.quantidade <= 0) {
+      const local = locaisDeEstoque.find(l => l.id === entry.localId);
+      const isRecipienteRequired = local?.tipo !== 'armario' && local?.tipo !== 'prateleira';
+      if (!entry.localId || (isRecipienteRequired && !entry.recipienteId) || entry.divisao === null || entry.quantidade <= 0) {
         setError("Por favor, preencha todos os campos para cada local de lançamento e garanta que a quantidade seja maior que zero.");
         return;
       }
@@ -332,23 +355,47 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
           }
         }
 
-        const estoqueLancamento: EstoqueLancamento = {
-          id: uuidv4(),
-          tipoProduto: `${selectedItem.tipoProduto}s` as EstoqueLancamento['tipoProduto'],
-          produtoId: selectedItem.id,
-          tipoMovimento,
-          usuario: 'Usuário Atual', // Placeholder - replace with actual user
-          observacao,
-          locais: [
-            {
-              recipienteId: entry.recipienteId,
-              divisao: entry.divisao || undefined, // Ensure it's undefined, not null
-              quantidade: entry.quantidade,
-              localId: entry.localId, // Add localId to the stored object
-            }
-          ]
-        };
-        batch.set(doc(collection(db, 'lancamentosEstoque'), estoqueLancamento.id), cleanObject(estoqueLancamento));
+        if (['parte', 'peca', 'modelo', 'kit'].includes(selectedItem.tipoProduto)) {
+          const lancamentoProduto: LancamentoProduto = {
+            id: uuidv4(),
+            tipoProduto: selectedItem.tipoProduto as LancamentoProduto['tipoProduto'],
+            produtoId: selectedItem.id,
+            tipoMovimento,
+            usuario: 'Usuário Atual',
+            observacao,
+            data: new Date() as any, // Firestore Timestamp
+            locais: [
+              {
+                recipienteId: entry.recipienteId,
+                divisao: entry.divisao || undefined,
+                quantidade: entry.quantidade,
+                localId: entry.localId,
+              }
+            ]
+          };
+          batch.set(doc(collection(db, 'lancamentosProdutos'), lancamentoProduto.id), cleanObject(lancamentoProduto));
+        } else if (selectedItem.tipoProduto === 'insumo') {
+          const lancamentoInsumo: LancamentoInsumo = {
+            id: uuidv4(),
+            insumoId: selectedItem.id,
+            tipoInsumo: selectedItem.tipoProduto as LancamentoInsumo['tipoInsumo'],
+            tipoMovimento,
+            quantidade: entry.quantidade, // For insumos, quantity is directly in the lancamento
+            unidadeMedida: 'un', // Placeholder - adjust as needed
+            data: new Date() as any, // Firestore Timestamp
+            origem: 'Modal de Lançamento', // Placeholder
+            detalhes: observacao, // Use 'detalhes' for LancamentoInsumo
+            locais: [
+              {
+                recipienteId: entry.recipienteId,
+                divisao: entry.divisao || undefined,
+                quantidade: entry.quantidade,
+                localId: entry.localId,
+              }
+            ]
+          };
+          batch.set(doc(collection(db, 'lancamentosInsumos'), lancamentoInsumo.id), cleanObject(lancamentoInsumo));
+        }
       }
 
       await batch.commit();
@@ -364,10 +411,10 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
   };
 
   const resetForm = () => {
-    setTipoProduto(singularizeType(initialTipoProduto || initialData?.tipoProduto || ''));
+    setTipoProduto(singularizeType(initialTipoProduto || (initialData && 'tipoProduto' in initialData ? initialData.tipoProduto : (initialData && 'tipoInsumo' in initialData ? initialData.tipoInsumo : ''))));
     setSelectedItem(null);
     setTipoMovimento(getValidTipoMovimento(initialData));
-    setObservacao(initialData?.observacao || '');
+    setObservacao(initialData && 'observacao' in initialData ? initialData.observacao : (initialData && 'detalhes' in initialData ? initialData.detalhes : ''));
     setProdutosOptions([]);
     setError('');
     setLancamentoLocais([]);
@@ -418,7 +465,10 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
   };
 
   const addLancamentoLocal = () => {
-    if (!currentLocalId || !currentRecipienteId || currentDivisao === null || currentQuantidade <= 0) {
+    const local = locaisDeEstoque.find(l => l.id === currentLocalId);
+    const isRecipienteRequired = local?.tipo !== 'armario' && local?.tipo !== 'prateleira';
+
+    if (!currentLocalId || (isRecipienteRequired && !currentRecipienteId) || currentDivisao === null || currentQuantidade <= 0) {
       setError("Por favor, preencha todos os campos do local de lançamento atual antes de adicionar.");
       return;
     }
@@ -447,10 +497,15 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
   };
 
   const getRecipienteForId = (recId: string) => recipientes.find(r => r.id === recId);
+  const getLocalForId = (localId: string) => locaisDeEstoque.find(l => l.id === localId);
 
   const selectedCurrentRecipiente = getRecipienteForId(currentRecipienteId);
-  const currentHDivs = selectedCurrentRecipiente?.divisoes?.horizontais || 1;
-  const currentVDivs = selectedCurrentRecipiente?.divisoes?.verticais || 1;
+  const selectedCurrentLocal = getLocalForId(currentLocalId);
+
+  const isLocalWithDivisions = selectedCurrentLocal?.tipo === 'armario' || selectedCurrentLocal?.tipo === 'prateleira';
+
+  const currentHDivs = isLocalWithDivisions ? selectedCurrentLocal?.divisoes?.h || 1 : selectedCurrentRecipiente?.divisoes?.horizontais || 1;
+  const currentVDivs = isLocalWithDivisions ? selectedCurrentLocal?.divisoes?.v || 1 : selectedCurrentRecipiente?.divisoes?.verticais || 1;
 
   if (!isOpen) return null;
 
@@ -475,7 +530,7 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">Tipo de Movimento</label>
-                <select id="tipoMovimento" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" value={tipoMovimento} onChange={(e) => setTipoMovimento(e.target.value as EstoqueLancamento['tipoMovimento'])} required disabled={!!initialData}>
+                <select id="tipoMovimento" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" value={tipoMovimento} onChange={(e) => setTipoMovimento(e.target.value as 'entrada' | 'saida' | 'ajuste')} required disabled={!!initialData}>
                   <option value="entrada">Entrada</option>
                   <option value="saida">Saída</option>
                   <option value="ajuste">Ajuste</option>
@@ -549,7 +604,15 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
                     <div>
                       <label className="block text-sm font-medium text-gray-700">Local</label>
                       <Select
-                        options={locaisDeEstoque.filter(l => l.id).map(l => ({ value: l.id!, label: l.nome }))}
+                        options={locaisDeEstoque.filter(l => {
+                          if (!l.id) return false;
+                          if (['parte', 'peca', 'modelo', 'kit'].includes(tipoProduto)) {
+                            return l.collectionType === 'locaisProdutos';
+                          } else if (tipoProduto === 'insumo') {
+                            return l.collectionType === 'locaisInsumos';
+                          }
+                          return false;
+                        }).map(l => ({ value: l.id!, label: l.nome }))}
                         value={locaisDeEstoque.length > 0 && currentLocalId ? { value: currentLocalId, label: locaisDeEstoque.find(l => l.id === currentLocalId)?.nome || '' } : null}
                         onChange={opt => {
                           setCurrentLocalId(opt?.value || '');
@@ -566,53 +629,55 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
                         className="mt-1"
                       />
                     </div>
-                    <div className="flex items-end space-x-2">
-                      <div className="flex-grow">
-                        <label className="block text-sm font-medium text-gray-700">Recipiente</label>
-                        <Select
-                          options={recipientes
-                            .filter(r => {
-                              if (!r.id) return false;
-                              if (tipoMovimento === 'saida') {
-                                // For 'saida', only show recipients that contain the selected product
-                                return r.localEstoqueId === currentLocalId && recipientHasSelectedProduct(r.id, selectedItem?.id);
-                              } else {
-                                // For 'entrada' or 'ajuste', show recipients with available divisions (or same product)
-                                return r.localEstoqueId === currentLocalId && hasAvailableDivision(r.id, selectedItem?.id);
-                              }
-                            })
-                            .map(r => {
-                              const isOccupiedByCurrentProduct = occupiedRecipientsProductMap.get(r.id!) === selectedItem?.id;
-                              const occupyingProduct = allProducts.find(p => p.id === occupiedRecipientsProductMap.get(r.id!));
-                              const occupancyLabel = occupyingProduct ? ` (Contém: ${occupyingProduct.sku} - ${occupyingProduct.nome})` : '';
-                              return {
-                                value: r.id!,
-                                label: `${r.nome} (${r.posicaoNaGrade.x},${r.posicaoNaGrade.y},${r.posicaoNaGrade.z})${occupancyLabel}`,
-                                isOccupiedByCurrentProduct: isOccupiedByCurrentProduct,
-                              };
-                            })}
-                          value={recipientes.length > 0 && currentRecipienteId ? { value: currentRecipienteId, label: `${recipientes.find(r => r.id === currentRecipienteId)?.nome || ''} (${recipientes.find(r => r.id === currentRecipienteId)?.posicaoNaGrade.x ?? 0},${recipientes.find(r => r.id === currentRecipienteId)?.posicaoNaGrade.y ?? 0},${recipientes.find(r => r.id === currentRecipienteId)?.posicaoNaGrade.z ?? 0})` } : null}
-                          onChange={opt => { setCurrentRecipienteId(opt?.value || ''); setCurrentDivisao(null); }}
-                          isDisabled={!!recipiente && lancamentoLocais.length === 0 || !currentLocalId}
-                          className="mt-1"
-                        />
+                    {locaisDeEstoque.find(l => l.id === currentLocalId)?.tipo !== 'armario' && locaisDeEstoque.find(l => l.id === currentLocalId)?.tipo !== 'prateleira' && (
+                      <div className="flex items-end space-x-2">
+                        <div className="flex-grow">
+                          <label className="block text-sm font-medium text-gray-700">Recipiente</label>
+                          <Select
+                            options={recipientes
+                              .filter(r => {
+                                if (!r.id) return false;
+                                if (tipoMovimento === 'saida') {
+                                  // For 'saida', only show recipients that contain the selected product
+                                  return r.localEstoqueId === currentLocalId && recipientHasSelectedProduct(r.id, selectedItem?.id);
+                                } else {
+                                  // For 'entrada' or 'ajuste', show recipients with available divisions (or same product)
+                                  return r.localEstoqueId === currentLocalId && hasAvailableDivision(r.id, selectedItem?.id);
+                                }
+                              })
+                              .map(r => {
+                                const isOccupiedByCurrentProduct = occupiedRecipientsProductMap.get(r.id!) === selectedItem?.id;
+                                const occupyingProduct = allProducts.find(p => p.id === occupiedRecipientsProductMap.get(r.id!));
+                                const occupancyLabel = occupyingProduct ? ` (Contém: ${occupyingProduct.sku} - ${occupyingProduct.nome})` : '';
+                                return {
+                                  value: r.id!,
+                                  label: `${r.nome} (${r.posicaoNaGrade.x},${r.posicaoNaGrade.y},${r.posicaoNaGrade.z})${occupancyLabel}`,
+                                  isOccupiedByCurrentProduct: isOccupiedByCurrentProduct,
+                                };
+                              })}
+                            value={recipientes.length > 0 && currentRecipienteId ? { value: currentRecipienteId, label: `${recipientes.find(r => r.id === currentRecipienteId)?.nome || ''} (${recipientes.find(r => r.id === currentRecipienteId)?.posicaoNaGrade.x ?? 0},${recipientes.find(r => r.id === currentRecipienteId)?.posicaoNaGrade.y ?? 0},${recipientes.find(r => r.id === currentRecipienteId)?.posicaoNaGrade.z ?? 0})` } : null}
+                            onChange={opt => { setCurrentRecipienteId(opt?.value || ''); setCurrentDivisao(null); }}
+                            isDisabled={!!recipiente && lancamentoLocais.length === 0 || !currentLocalId}
+                            className="mt-1"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsRecipienteModalOpen(true)}
+                          disabled={!currentLocalId || !currentSelectedLocalDimensions}
+                          className="p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 flex-shrink-0"
+                          title="Adicionar Novo Recipiente"
+                        >
+                          <Plus size={20} />
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsRecipienteModalOpen(true)}
-                        disabled={!currentLocalId || !currentSelectedLocalDimensions}
-                        className="p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 flex-shrink-0"
-                        title="Adicionar Novo Recipiente"
-                      >
-                        <Plus size={20} />
-                      </button>
-                    </div>
+                    )}
                   </div>
                   <div className="mt-4">
                     <label className="block text-sm font-medium text-gray-700">Quantidade</label>
                     <input type="number" value={currentQuantidade} onChange={e => setCurrentQuantidade(parseInt(e.target.value) || 0)} min="1" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" />
                   </div>
-                  {selectedCurrentRecipiente && (
+                  {(selectedCurrentRecipiente || (isLocalWithDivisions && currentLocalId)) && (
                     <div className="mt-4">
                       <label className="block text-sm font-medium text-gray-700">Divisão</label>
                       <div className="mt-1 grid gap-1 bg-gray-100 p-2 rounded-md" style={{ gridTemplateColumns: `repeat(${currentVDivs}, 1fr)`, gridTemplateRows: `repeat(${currentHDivs}, 1fr)` }}>
@@ -620,7 +685,25 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
                           const h = Math.floor(i / currentVDivs);
                           const v = i % currentVDivs;
                           const isSelected = currentDivisao?.h === h && currentDivisao?.v === v;
-                          const occupancyInfo = selectedCurrentRecipiente?.id ? getDivisionOccupancyInfo(selectedCurrentRecipiente.id, h, v, selectedItem?.id) : { occupied: false, byDifferent: false, productInfo: null, productId: null };
+
+                          let occupancyInfo;
+                          if (selectedCurrentRecipiente?.id) {
+                            occupancyInfo = getDivisionOccupancyInfo(selectedCurrentRecipiente.id, h, v, selectedItem?.id);
+                          } else if (isLocalWithDivisions && currentLocalId) {
+                            // For armarios/prateleiras, check occupancy directly on the local
+                            const localOccupants = (selectedCurrentLocal as LocalInsumo)?.ocupantes || [];
+                            const existingOccupant = localOccupants.find(occ =>
+                              occ.divisao?.h === h && occ.divisao?.v === v && occ.insumoId !== selectedItem?.id
+                            );
+                            occupancyInfo = {
+                              occupied: !!existingOccupant,
+                              byDifferent: !!existingOccupant,
+                              productInfo: existingOccupant ? allProducts.find(p => p.id === existingOccupant.insumoId)?.nome : null,
+                              productId: existingOccupant?.insumoId,
+                            };
+                          } else {
+                            occupancyInfo = { occupied: false, byDifferent: false, productInfo: null, productId: null };
+                          }
 
                           const isOccupiedBySelectedProduct = occupancyInfo.occupied && occupancyInfo.productId === selectedItem?.id;
                           const isAvailableForEntry = !occupancyInfo.occupied || isOccupiedBySelectedProduct;
@@ -651,7 +734,14 @@ const EstoqueLancamentoModal: React.FC<EstoqueLancamentoModalProps> = ({ isOpen,
                       type="button"
                       onClick={addLancamentoLocal}
                       className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:bg-gray-400"
-                      disabled={!currentLocalId || !currentRecipienteId || currentDivisao === null || currentQuantidade <= 0}
+                      disabled={
+                        !currentLocalId ||
+                        (locaisDeEstoque.find(l => l.id === currentLocalId)?.tipo !== 'armario' &&
+                          locaisDeEstoque.find(l => l.id === currentLocalId)?.tipo !== 'prateleira' &&
+                          !currentRecipienteId) ||
+                        currentDivisao === null ||
+                        currentQuantidade <= 0
+                      }
                     >
                       Adicionar Local de Lançamento
                     </button>

@@ -6,19 +6,20 @@ import { db, auth } from '../services/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { Plus, Edit, Trash2, Search } from 'lucide-react';
-import { LocalDeEstoque } from '../types/mapaEstoque';
+import { LocalProduto, LocalInsumo } from '../types/mapaEstoque';
 import LocalDeEstoqueFormModal from '../components/LocalDeEstoqueFormModal';
 import RecipienteFormModal from '../components/RecipienteFormModal';
 import ImportRecipienteModal from '../components/ImportRecipienteModal';
 import { Recipiente } from '../types/mapaEstoque';
 import { Produto, PosicaoEstoque } from '../types';
 import StorageGrid2D from '../components/StorageGrid2D';
+import StorageDivisionView from '../components/StorageDivisionView';
 import EstoqueLancamentoModal from '../components/EstoqueLancamentoModal';
 
 export default function MapaEstoque() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
-  const [locais, setLocais] = useState<LocalDeEstoque[]>([]);
+  const [locais, setLocais] = useState<(LocalProduto | LocalInsumo)[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [isLocalModalOpen, setIsLocalModalOpen] = useState(false);
@@ -26,15 +27,15 @@ export default function MapaEstoque() {
   const [isImportRecipienteModalOpen, setIsImportRecipienteModalOpen] = useState(false);
   const [isEstoqueModalOpen, setIsEstoqueModalOpen] = useState(false);
   const [initialTipoProduto, setInitialTipoProduto] = useState<string | undefined>(undefined);
-  const [localToEdit, setLocalToEdit] = useState<LocalDeEstoque | null>(null);
+  const [localToEdit, setLocalToEdit] = useState<(LocalProduto | LocalInsumo) & { collectionType?: 'locaisProdutos' | 'locaisInsumos' } | null>(null);
   const [recipienteToEdit, setRecipienteToEdit] = useState<Recipiente | null>(null);
-  const [selectedLocal, setSelectedLocal] = useState<LocalDeEstoque | null>(null); // New state for selected local
+  const [selectedLocal, setSelectedLocal] = useState<(LocalProduto | LocalInsumo) | null>(null); // New state for selected local
   const [currentZLevel, setCurrentZLevel] = useState(0); // State for current Z-level
   const [searchTerm, setSearchTerm] = useState('');
 
   // Memoize the max Z level for the selected local
   const maxZLevel = useMemo(() => {
-    if (!selectedLocal) return 0;
+    if (!selectedLocal || !selectedLocal.dimensoesGrade) return 0;
     return selectedLocal.dimensoesGrade.z - 1;
   }, [selectedLocal]);
 
@@ -130,13 +131,15 @@ export default function MapaEstoque() {
       const collectionsToFetch = ['partes', 'pecas', 'modelos', 'kits', 'insumos'];
       const productPromises = collectionsToFetch.map(c => getDocs(collection(db, c)));
 
-      const [locaisSnapshot, recipientesSnapshot, ...productSnapshots] = await Promise.all([
-        getDocs(collection(db, 'locaisDeEstoque')),
+      const [locaisProdutosSnapshot, locaisInsumosSnapshot, recipientesSnapshot, ...productSnapshots] = await Promise.all([
+        getDocs(collection(db, 'locaisProdutos')),
+        getDocs(collection(db, 'locaisInsumos')),
         getDocs(collection(db, 'recipientes')),
         ...productPromises
       ]);
 
-      const locaisList = locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalDeEstoque[];
+      const locaisProdutosList = locaisProdutosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), collectionType: 'locaisProdutos' })) as LocalProduto[];
+      const locaisInsumosList = locaisInsumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), collectionType: 'locaisInsumos' })) as LocalInsumo[];
       const recipientesList = recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[];
       
       const allProducts = productSnapshots.flatMap((snapshot, index) => {
@@ -154,7 +157,7 @@ export default function MapaEstoque() {
         });
       });
 
-      setLocais(locaisList);
+      setLocais([...locaisProdutosList, ...locaisInsumosList]);
       setRecipientes(recipientesList);
       setProdutos(allProducts);
 
@@ -165,10 +168,10 @@ export default function MapaEstoque() {
     }
   };
 
-  const handleSaveLocal = async (localData: LocalDeEstoque) => {
+  const handleSaveLocal = async (localData: LocalProduto | LocalInsumo, collectionType: 'locaisProdutos' | 'locaisInsumos') => {
     try {
       if (localData.id) {
-        const localRef = doc(db, 'locaisDeEstoque', localData.id);
+        const localRef = doc(db, collectionType, localData.id);
         await updateDoc(localRef, { ...localData, updatedAt: new Date() });
         setLocais(prev => prev.map(l => (l.id === localData.id ? { ...l, ...localData } : l)));
       } else {
@@ -177,8 +180,8 @@ export default function MapaEstoque() {
         if (dataToSave.id === undefined) { // Only delete if it's explicitly undefined
           delete dataToSave.id;
         }
-        const docRef = await addDoc(collection(db, 'locaisDeEstoque'), { ...dataToSave, createdAt: new Date() });
-        setLocais(prev => [...prev, { id: docRef.id, ...dataToSave } as LocalDeEstoque]);
+        const docRef = await addDoc(collection(db, collectionType), { ...dataToSave, createdAt: new Date() });
+        setLocais(prev => [...prev, { id: docRef.id, ...dataToSave } as (LocalProduto | LocalInsumo)]);
       }
       setIsLocalModalOpen(false);
       setLocalToEdit(null);
@@ -213,11 +216,11 @@ export default function MapaEstoque() {
     }
   };
 
-  const handleDeleteLocal = async (id: string) => {
+  const handleDeleteLocal = async (id: string, collectionType: 'locaisProdutos' | 'locaisInsumos') => {
     if (window.confirm("Tem certeza que deseja deletar este local de estoque? Esta ação não pode ser desfeita.")) {
       try {
-        await deleteDoc(doc(db, 'locaisDeEstoque', id));
-        setLocais(prev => prev.filter((local: LocalDeEstoque) => local.id !== id));
+        await deleteDoc(doc(db, collectionType, id));
+        setLocais(prev => prev.filter((local: (LocalProduto | LocalInsumo)) => local.id !== id));
         // Also delete associated recipients
         const associatedRecipients = recipientes.filter(r => r.localEstoqueId === id);
         for (const rec of associatedRecipients) {
@@ -241,7 +244,7 @@ export default function MapaEstoque() {
     }
   };
 
-  const openLocalModal = (local?: LocalDeEstoque) => {
+  const openLocalModal = (local?: (LocalProduto | LocalInsumo) & { collectionType?: 'locaisProdutos' | 'locaisInsumos' }) => {
     setLocalToEdit(local || null);
     setIsLocalModalOpen(true);
   };
@@ -280,7 +283,7 @@ export default function MapaEstoque() {
     setIsEstoqueModalOpen(true);
   };
 
-  const filteredLocais = locais.filter((local: LocalDeEstoque) =>
+  const filteredLocais = locais.filter((local) =>
     local.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
     local.tipo.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -378,7 +381,7 @@ export default function MapaEstoque() {
                       Tipo
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Dimensões da Grade (X x Y x Z)
+                      Configuração
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Ações
@@ -398,19 +401,23 @@ export default function MapaEstoque() {
                             {local.tipo}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {local.dimensoesGrade.x} x {local.dimensoesGrade.y} x {local.dimensoesGrade.z}
+                            {local.tipo === 'gaveta' && local.dimensoesGrade
+                              ? `${local.dimensoesGrade.x} x ${local.dimensoesGrade.y} x ${local.dimensoesGrade.z} (Grade)`
+                              : local.divisoes
+                              ? `${local.divisoes.h} x ${local.divisoes.v} (Divisões)`
+                              : 'N/A'}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                             <div className="flex items-center justify-end">
                               <button
-                                onClick={(e) => { e.stopPropagation(); openLocalModal(local); }}
+                                onClick={(e) => { e.stopPropagation(); openLocalModal({ ...local, collectionType: local.collectionType || 'locaisProdutos' }); }}
                                 className="text-blue-600 hover:text-blue-900 p-1 rounded-full hover:bg-blue-100"
                                 title="Editar Local"
                               >
                                 <Edit className="h-5 w-5" />
                               </button>
                               <button
-                                onClick={(e) => { e.stopPropagation(); handleDeleteLocal(local.id!); }}
+                                onClick={(e) => { e.stopPropagation(); handleDeleteLocal(local.id!, local.collectionType || 'locaisProdutos'); }}
                                 className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
                                 title="Deletar Local"
                               >
@@ -472,40 +479,51 @@ export default function MapaEstoque() {
           )}
         </div>
 
-        {/* 3D Grid Visualization */}
+        {/* Visualization */}
         {selectedLocal && (
           <div className="bg-white shadow rounded-lg p-6 mt-6">
             <h3 className="text-lg font-medium leading-6 text-gray-900 mb-4">
-              Visualização 3D: {selectedLocal.nome}
+              Visualização: {selectedLocal.nome}
             </h3>
-            {selectedLocal.dimensoesGrade.z > 1 && (
-              <div className="mb-4 flex items-center space-x-2">
-                <label htmlFor="z-level-select" className="text-sm font-medium text-gray-700">
-                  Andar Z:
-                </label>
-                <select
-                  id="z-level-select"
-                  value={currentZLevel}
-                  onChange={(e) => setCurrentZLevel(parseInt(e.target.value))}
-                  className="block w-auto pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
-                >
-                  {Array.from({ length: selectedLocal.dimensoesGrade.z }).map((_, z) => (
-                    <option key={z} value={z}>
-                      {z}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {selectedLocal.tipo === 'gaveta' && selectedLocal.dimensoesGrade && (
+              <>
+                {selectedLocal.dimensoesGrade.z > 1 && (
+                  <div className="mb-4 flex items-center space-x-2">
+                    <label htmlFor="z-level-select" className="text-sm font-medium text-gray-700">
+                      Andar Z:
+                    </label>
+                    <select
+                      id="z-level-select"
+                      value={currentZLevel}
+                      onChange={(e) => setCurrentZLevel(parseInt(e.target.value))}
+                      className="block w-auto pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+                    >
+                      {Array.from({ length: selectedLocal.dimensoesGrade.z }).map((_, z) => (
+                        <option key={z} value={z}>
+                          {z}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <StorageGrid2D
+                  local={selectedLocal}
+                  recipientes={recipientes.filter(r => r.localEstoqueId === selectedLocal.id)}
+                  produtos={produtos}
+                  onRecipienteClick={openRecipienteModal}
+                  onMoveRecipiente={handleMoveRecipiente}
+                  onEditStockClick={handleEditStock}
+                  currentZLevel={currentZLevel}
+                />
+              </>
             )}
-            <StorageGrid2D
-              local={selectedLocal}
-              recipientes={recipientes.filter(r => r.localEstoqueId === selectedLocal.id)}
-              produtos={produtos}
-              onRecipienteClick={openRecipienteModal}
-              onMoveRecipiente={handleMoveRecipiente}
-              onEditStockClick={handleEditStock}
-              currentZLevel={currentZLevel} // Pass the current Z level
-            />
+            {(selectedLocal.tipo === 'prateleira' || selectedLocal.tipo === 'armario') && (
+              <StorageDivisionView
+                local={selectedLocal}
+                recipientes={recipientes}
+                produtos={produtos}
+              />
+            )}
           </div>
         )}
 
@@ -539,7 +557,7 @@ export default function MapaEstoque() {
         )}
 
         {/* Modal for Recipiente Form */}
-        {isRecipienteModalOpen && selectedLocal && (
+        {isRecipienteModalOpen && selectedLocal && selectedLocal.dimensoesGrade && (
           <RecipienteFormModal
             isOpen={isRecipienteModalOpen}
             onClose={closeRecipienteModal}

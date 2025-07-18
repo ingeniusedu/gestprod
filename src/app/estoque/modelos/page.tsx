@@ -4,11 +4,11 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Search, Box, Edit, Trash2, Settings, Spool, List, Grid } from 'lucide-react';
 import ModeloFormModal from '../../components/ModeloFormModal';
 import ServiceCostModal from '../../components/ServiceCostModal';
-import { db, auth, deleteModelos, getLocaisDeEstoque, getRecipientes } from '../../services/firebase';
+import { db, auth, deleteModelos, getLocaisProdutos, getLocaisInsumos, getRecipientes } from '../../services/firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Modelo, Peca, Insumo, PosicaoEstoque } from '../../types';
-import { LocalDeEstoque, Recipiente } from '../../types/mapaEstoque';
+import { LocalProduto, LocalInsumo, Recipiente } from '../../types/mapaEstoque';
 
 export default function ModelosPage({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) {
   const [searchTerm, setSearchTerm] = useState(propSearchTerm);
@@ -19,7 +19,7 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
   const [selectedModelos, setSelectedModelos] = useState<string[]>([]);
   const [pecas, setPecas] = useState<Peca[]>([]); // Needed for calculating modelo costs
   const [insumos, setInsumos] = useState<Insumo[]>([]); // Needed for calculating peca costs within modelos
-  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalDeEstoque[]>([]);
+  const [locaisDeEstoque, setLocaisDeEstoque] = useState<(LocalProduto | LocalInsumo)[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
   const [serviceCosts, setServiceCosts] = useState({
     custoPorMinutoImpressao: 0,
@@ -54,15 +54,15 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
       const modelosCollection = collection(db, 'modelos');
       const pecasCollection = collection(db, 'pecas');
       const insumosCollection = collection(db, 'insumos');
-      const locaisDeEstoqueCollection = collection(db, 'locaisDeEstoque');
       const recipientesCollection = collection(db, 'recipientes');
 
-      const [modelosSnapshot, pecasSnapshot, insumosSnapshot, locaisSnapshot, recipientesSnapshot] = await Promise.all([
+      const [modelosSnapshot, pecasSnapshot, insumosSnapshot, recipientesSnapshot, locaisProdutosSnapshot, locaisInsumosSnapshot] = await Promise.all([
         getDocs(modelosCollection),
         getDocs(pecasCollection),
         getDocs(insumosCollection),
-        getDocs(locaisDeEstoqueCollection),
-        getDocs(recipientesCollection)
+        getDocs(recipientesCollection),
+        getLocaisProdutos(), // Use the specific function
+        getLocaisInsumos()   // Use the specific function
       ]);
 
       setModelos(modelosSnapshot.docs.map(doc => {
@@ -73,8 +73,8 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
       }));
       setPecas(pecasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Peca[]);
       setInsumos(insumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Insumo[]);
-      setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalDeEstoque[]);
       setRecipientes(recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[]);
+      setLocaisDeEstoque([...locaisProdutosSnapshot, ...locaisInsumosSnapshot] as (LocalProduto | LocalInsumo)[]); // Combine both
 
       const serviceCostsRef = doc(db, 'settings', 'serviceCosts');
       const serviceCostsSnap = await getDoc(serviceCostsRef);
@@ -110,14 +110,16 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
     return uniqueLocations.join(', ');
   };
 
-  const filteredModelos = modelos.filter(modelo => {
-    const modeloLocal = getLocalString(modelo.posicoesEstoque || []);
-    return (
-      modelo.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      modelo.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      modeloLocal.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  });
+  const filteredModelos = modelos
+    .filter(modelo => {
+      const modeloLocal = getLocalString(modelo.posicoesEstoque || []);
+      return (
+        modelo.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        modelo.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        modeloLocal.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    })
+    .sort((a, b) => a.sku.localeCompare(b.sku));
 
   const openModal = (modelo: Modelo | null = null) => {
     setModeloToEdit(modelo);
@@ -152,10 +154,11 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
 
   const handleSaveModelo = async (modeloData: Modelo) => {
     try {
-      if (modeloData.id) {
-        await updateDoc(doc(db, 'modelos', modeloData.id), modeloData);
+      const { id, ...dataToSave } = modeloData; // Separate id from data
+      if (id) {
+        await updateDoc(doc(db, 'modelos', id), dataToSave);
       } else {
-        await addDoc(collection(db, 'modelos'), modeloData);
+        await addDoc(collection(db, 'modelos'), dataToSave);
       }
       closeModal();
     } catch (error) {
@@ -201,18 +204,19 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
 
   const handleSelectAllModelos = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
-      setSelectedModelos(filteredModelos.map(m => m.id!));
+      setSelectedModelos(filteredModelos.map(m => m.id as string));
     } else {
       setSelectedModelos([]);
     }
   };
 
   const renderModeloCard = (modelo: Modelo) => {
+    if (!modelo.id) return null; // Ensure modelo.id is defined
+
     const {
       nome,
       sku,
       custoCalculado = 0,
-      tempoImpressao = 0,
       tempoMontagem = 0,
       pecas: modeloPecas = [],
       estoqueTotal = 0,
@@ -224,6 +228,7 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
     let gruposImpressaoOtimizado = 0;
     let gruposImpressaoTotal = 0;
     let totalFilamentQuantity = 0;
+    let totalTempoImpressao = 0; // Initialize totalTempoImpressao
 
     modeloPecas.forEach(modeloPeca => {
       const foundPeca = pecas.find(p => p.id === modeloPeca.pecaId);
@@ -233,13 +238,13 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
           gruposImpressaoOtimizado += foundPeca.gruposImpressao.length;
           gruposImpressaoTotal += foundPeca.gruposImpressao.length * modeloPeca.quantidade;
           foundPeca.gruposImpressao.forEach(grupo => {
-            if (grupo.filamentos && grupo.filamentos.principal) {
-              const filamentosArray = [grupo.filamentos.principal, ...(grupo.filamentos.alternativos || [])];
-              filamentosArray.forEach(fil => {
+            totalTempoImpressao += Number(grupo.tempoImpressao || 0); // Accumulate impression time
+            if (grupo.filamentos && Array.isArray(grupo.filamentos)) { // Ensure it's an array
+              grupo.filamentos.forEach(fil => {
                 if (fil.quantidade > 0) {
                   totalFilamentQuantity += Number(fil.quantidade || 0);
                 }
-                const insumo = insumos.find(i => i.grupoFilamento === fil.grupoFilamento);
+                const insumo = insumos.find(i => i.grupoFilamentoId === fil.grupoFilamentoId); // Corrected property name
                 if (insumo?.cor) {
                   uniqueColors.add(insumo.cor);
                 }
@@ -251,12 +256,12 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
     });
 
     return (
-      <div key={modelo.id} className={`bg-white shadow rounded-lg p-6 hover:shadow-md transition-shadow relative group ${selectedModelos.includes(modelo.id!) ? 'ring-2 ring-blue-500' : ''}`}>
+      <div key={modelo.id} className={`bg-white shadow rounded-lg p-6 hover:shadow-md transition-shadow relative group ${selectedModelos.includes(modelo.id as string) ? 'ring-2 ring-blue-500' : ''}`}>
         <input
           type="checkbox"
           className="absolute top-2 left-2 h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity"
-          checked={selectedModelos.includes(modelo.id!)}
-          onChange={() => handleSelectModelo(modelo.id!)}
+          checked={selectedModelos.includes(modelo.id as string)}
+          onChange={() => handleSelectModelo(modelo.id as string)}
         />
         <div className="flex justify-between items-start mb-4">
           <div>
@@ -284,7 +289,7 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
         </div>
 
         <div className="mt-4 pt-4 border-t border-gray-200 space-y-1 text-sm text-gray-600">
-          <div><strong>Impressão:</strong> {tempoImpressao} min</div>
+          <div><strong>Impressão:</strong> {totalTempoImpressao} min</div>
           <div><strong>Filamento:</strong> {totalFilamentQuantity.toFixed(2)} g</div>
           <div><strong>Montagem:</strong> {tempoMontagem} min</div>
           <div><strong>Custo:</strong> R$ {(custoCalculado || 0).toFixed(2)}</div>
@@ -298,7 +303,7 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
             <Edit className="h-5 w-5" />
           </button>
           <button
-            onClick={() => handleDeleteProduto(modelo.id!, 'modelo')}
+            onClick={() => handleDeleteProduto(modelo.id as string, 'modelo')}
             className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
             title="Deletar Modelo"
           >
@@ -310,11 +315,12 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
   };
 
   const renderModeloListRow = (modelo: Modelo) => {
+    if (!modelo.id) return null; // Ensure modelo.id is defined
+
     const {
       nome,
       sku,
       custoCalculado = 0,
-      tempoImpressao = 0,
       tempoMontagem = 0,
       pecas: modeloPecas = [],
       estoqueTotal = 0,
@@ -326,6 +332,7 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
     let gruposImpressaoOtimizado = 0;
     let gruposImpressaoTotal = 0;
     let totalFilamentQuantity = 0;
+    let totalTempoImpressao = 0; // Initialize totalTempoImpressao
 
     modeloPecas.forEach(modeloPeca => {
       const foundPeca = pecas.find(p => p.id === modeloPeca.pecaId);
@@ -335,13 +342,13 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
           gruposImpressaoOtimizado += foundPeca.gruposImpressao.length;
           gruposImpressaoTotal += foundPeca.gruposImpressao.length * modeloPeca.quantidade;
           foundPeca.gruposImpressao.forEach(grupo => {
-            if (grupo.filamentos && grupo.filamentos.principal) {
-              const filamentosArray = [grupo.filamentos.principal, ...(grupo.filamentos.alternativos || [])];
-              filamentosArray.forEach(fil => {
+            totalTempoImpressao += Number(grupo.tempoImpressao || 0); // Accumulate impression time
+            if (grupo.filamentos && Array.isArray(grupo.filamentos)) { // Ensure it's an array
+              grupo.filamentos.forEach(fil => {
                 if (fil.quantidade > 0) {
                   totalFilamentQuantity += Number(fil.quantidade || 0);
                 }
-                const insumo = insumos.find(i => i.grupoFilamento === fil.grupoFilamento);
+                const insumo = insumos.find(i => i.grupoFilamentoId === fil.grupoFilamentoId); // Corrected property name
                 if (insumo?.cor) {
                   uniqueColors.add(insumo.cor);
                 }
@@ -353,12 +360,12 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
     });
 
     return (
-      <tr key={modelo.id} className={`hover:bg-gray-50 ${selectedModelos.includes(modelo.id!) ? 'bg-blue-50' : ''}`}>
+      <tr key={modelo.id} className={`hover:bg-gray-50 ${selectedModelos.includes(modelo.id as string) ? 'bg-blue-50' : ''}`}>
         <td className="px-6 py-4 whitespace-nowrap">
           <input
             type="checkbox"
-            checked={selectedModelos.includes(modelo.id!)}
-            onChange={() => handleSelectModelo(modelo.id!)}
+            checked={selectedModelos.includes(modelo.id as string)}
+            onChange={() => handleSelectModelo(modelo.id as string)}
           />
         </td>
         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{sku}</td>
@@ -366,7 +373,7 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{totalPecasCount}</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{gruposImpressaoOtimizado} ({gruposImpressaoTotal})</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{uniqueColors.size}</td>
-        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{tempoImpressao} min</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{totalTempoImpressao} min</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{totalFilamentQuantity.toFixed(2)} g</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{tempoMontagem} min</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {(custoCalculado || 0).toFixed(2)}</td>
@@ -382,7 +389,7 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
               <Edit className="h-5 w-5" />
             </button>
             <button
-              onClick={() => handleDeleteProduto(modelo.id!, 'modelo')}
+              onClick={() => handleDeleteProduto(modelo.id as string, 'modelo')}
               className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
               title="Deletar Modelo"
             >

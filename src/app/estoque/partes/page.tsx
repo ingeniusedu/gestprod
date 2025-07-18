@@ -2,9 +2,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { Plus, Search, Edit, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
-import { getPartes, addParte, updateParte, deleteParte, deletePartes, getLocaisDeEstoque, getRecipientes, db } from '../../services/firebase';
-import { Parte, PosicaoEstoque, EstoqueLancamento } from '../../types';
-import { LocalDeEstoque, Recipiente } from '../../types/mapaEstoque';
+import { getPartes, addParte, updateParte, deleteParte, deletePartes, getLocaisProdutos, getRecipientes, db } from '../../services/firebase';
+import { Parte, PosicaoEstoque } from '../../types';
+import { LocalProduto, Recipiente } from '../../types/mapaEstoque';
 import { v4 as uuidv4 } from 'uuid';
 import { collection, addDoc, Timestamp } from 'firebase/firestore';
 import { cleanObject } from '../../utils/cleanObject';
@@ -23,7 +23,7 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
   const [error, setError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentParte, setCurrentParte] = useState<Parte | null>(null);
-  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalDeEstoque[]>([]);
+  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalProduto[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
   const [formData, setFormData] = useState({
     sku: '',
@@ -41,7 +41,7 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
       try {
         const [partesList, locaisList, recipientesList] = await Promise.all([
           getPartes() as Promise<Parte[]>,
-          getLocaisDeEstoque() as Promise<LocalDeEstoque[]>,
+          getLocaisProdutos() as Promise<LocalProduto[]>,
           getRecipientes() as Promise<Recipiente[]>,
         ]);
         setPartes(partesList);
@@ -71,28 +71,8 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
         await updateParte(currentParte.id, { sku: formData.sku, nome: formData.nome });
       } else {
         // When adding a new part, create the part document first.
-        const newParteRef = await addParte({ sku: formData.sku, nome: formData.nome, posicoesEstoque: [] });
-        const newParteId = newParteRef.id;
-
-        // If there are initial stock positions, create EstoqueLancamento documents for them
-        for (const pos of formData.posicoesEstoque) {
-          const estoqueLancamento: EstoqueLancamento = {
-            id: uuidv4(),
-            tipoProduto: 'partes',
-            produtoId: newParteId,
-            tipoMovimento: 'entrada',
-            data: Timestamp.fromDate(new Date()),
-            usuario: 'Sistema de Estoque', // Or actual user
-            observacao: `Lançamento inicial de estoque para nova parte: ${formData.nome}`,
-            locais: [{
-              recipienteId: pos.recipienteId,
-              divisao: pos.divisao,
-              quantidade: pos.quantidade,
-              localId: pos.localId || '', // Add localId
-            }],
-          };
-          await addDoc(collection(db, 'lancamentosEstoque'), cleanObject(estoqueLancamento));
-        }
+        // When adding a new part, create the part document. Stock positions are managed via separate launches.
+        await addParte({ sku: formData.sku, nome: formData.nome, posicoesEstoque: [] });
       }
       const updatedPartes = await getPartes() as Parte[];
       setPartes(updatedPartes);
@@ -173,7 +153,7 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     return posicoes.map(pos => {
       const recipiente = recipientes.find((r: Recipiente) => r.id === pos.recipienteId);
       if (recipiente) {
-        const local = locaisDeEstoque.find((l: LocalDeEstoque) => l.id === recipiente.localEstoqueId);
+        const local = locaisDeEstoque.find((l: LocalProduto) => l.id === recipiente.localEstoqueId);
         const localName = local ? local.nome : 'Local Desconhecido';
         const { x, y, z } = recipiente.posicaoNaGrade;
         const divisionString = pos.divisao ? ` (Divisão: H${pos.divisao.h} V${pos.divisao.v})` : '';
@@ -200,14 +180,16 @@ const PartesPage = ({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) =
     );
   };
 
-  const filteredPartes = partes.filter((parte: Parte) => {
-    const parteLocalSummary = getLocalSummaryString(parte.posicoesEstoque || []);
-    return (
-      parte.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      parte.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      parteLocalSummary.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  });
+  const filteredPartes = partes
+    .filter((parte: Parte) => {
+      const parteLocalSummary = getLocalSummaryString(parte.posicoesEstoque || []);
+      return (
+        parte.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        parte.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        parteLocalSummary.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    })
+    .sort((a, b) => a.sku.localeCompare(b.sku));
 
   if (loading) return (
     <div className="text-center py-12">

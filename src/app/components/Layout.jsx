@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link'; // Import Link from next/link
 import { usePathname } from 'next/navigation'; // Import usePathname from next/navigation
 import { 
@@ -14,6 +14,9 @@ import {
   User,
   Printer // Import Printer icon
 } from 'lucide-react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { auth } from '../services/firebase';
+import AuthForm from './AuthForm';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: Home },
@@ -27,7 +30,53 @@ const navigation = [
 
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [user, setUser] = useState(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef(null);
   const pathname = usePathname(); // Use usePathname from next/navigation
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoadingAuth(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
+        setUserMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      console.log('User signed out successfully!');
+      setUserMenuOpen(false);
+    } catch (error) {
+      console.error('Error signing out:', error.message);
+    }
+  };
+
+  if (loadingAuth) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-100">
+        <p>Carregando autenticação...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthForm />;
+  }
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -126,15 +175,47 @@ export default function Layout({ children }) {
               </div>
             </div>
             <div className="ml-4 flex items-center md:ml-6">
-              <div className="relative ml-3">
-                <div className="flex items-center">
+              <div className="relative ml-3" ref={userMenuRef}>
+                <div>
                   <button
                     type="button"
                     className="flex max-w-xs items-center rounded-full bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                    id="user-menu-button"
+                    aria-expanded={userMenuOpen}
+                    aria-haspopup="true"
+                    onClick={() => setUserMenuOpen(!userMenuOpen)}
                   >
-                    <User className="h-8 w-8 rounded-full bg-gray-200 p-1" />
+                    <span className="sr-only">Open user menu</span>
+                    {user.photoURL ? (
+                      <img className="h-8 w-8 rounded-full" src={user.photoURL} alt="User avatar" />
+                    ) : (
+                      <User className="h-8 w-8 rounded-full bg-gray-200 p-1" />
+                    )}
                   </button>
                 </div>
+                {userMenuOpen && (
+                  <div
+                    className="absolute right-0 z-10 mt-2 w-48 origin-top-right rounded-md bg-white py-1 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none"
+                    role="menu"
+                    aria-orientation="vertical"
+                    aria-labelledby="user-menu-button"
+                    tabIndex="-1"
+                  >
+                    <div className="px-4 py-2 text-sm text-gray-700">
+                      <p className="font-medium">{user.displayName || 'Usuário'}</p>
+                      <p className="text-gray-500">{user.email}</p>
+                    </div>
+                    <button
+                      onClick={handleSignOut}
+                      className="block px-4 py-2 text-sm text-gray-700 w-full text-left hover:bg-gray-100"
+                      role="menuitem"
+                      tabIndex="-1"
+                      id="user-menu-item-0"
+                    >
+                      Sair
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

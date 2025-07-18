@@ -136,6 +136,10 @@ export const updatePeca = async (id, pecaData) => {
 };
 
 export const deletePeca = async (id) => {
+  if (!id) {
+    console.error("deletePeca called with an undefined id");
+    return false;
+  }
   try {
     const pecaDocRef = doc(db, 'pecas', id);
     await deleteDoc(pecaDocRef);
@@ -356,15 +360,28 @@ export const deleteInsumos = async (ids) => {
   }
 };
 
-// Firestore operations for LocaisDeEstoque
-const locaisDeEstoqueCollectionRef = collection(db, 'locaisDeEstoque');
+// Firestore operations for LocaisDeEstoque (Produtos)
+const locaisProdutosCollectionRef = collection(db, 'locaisProdutos');
 
-export const getLocaisDeEstoque = async () => {
+export const getLocaisProdutos = async () => {
   try {
-    const querySnapshot = await getDocs(locaisDeEstoqueCollectionRef);
+    const querySnapshot = await getDocs(locaisProdutosCollectionRef);
     return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   } catch (e) {
-    console.error("Error getting locais de estoque: ", e);
+    console.error("Error getting locais de produtos: ", e);
+    throw e;
+  }
+};
+
+// Firestore operations for LocaisInsumos
+const locaisInsumosCollectionRef = collection(db, 'locaisInsumos');
+
+export const getLocaisInsumos = async () => {
+  try {
+    const querySnapshot = await getDocs(locaisInsumosCollectionRef);
+    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (e) {
+    console.error("Error getting locais de insumos: ", e);
     throw e;
   }
 };

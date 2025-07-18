@@ -2,13 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { db as firestore } from '../services/firebase';
 import { collection, addDoc, doc, updateDoc, getDoc } from 'firebase/firestore';
 import PecaSelectionModal from './PecaSelectionModal';
+import InsumoSelectionModal from './InsumoSelectionModal';
 
 const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
   const [sku, setSku] = useState('');
   const [nome, setNome] = useState('');
   const [tempoMontagemAdicional, setTempoMontagemAdicional] = useState(0);
   const [pecas, setPecas] = useState([]);
+  const [insumosAdicionais, setInsumosAdicionais] = useState([]);
   const [isPecaSelectionModalOpen, setPecaSelectionModalOpen] = useState(false);
+  const [isInsumoSelectionModalOpen, setInsumoSelectionModalOpen] = useState(false);
 
   const [tempoImpressaoTotal, setTempoImpressaoTotal] = useState(0);
   const [tempoMontagemTotal, setTempoMontagemTotal] = useState(0);
@@ -38,11 +41,13 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
       setNome(modelo.nome);
       setTempoMontagemAdicional(modelo.tempoMontagemAdicional || 0);
       setPecas(modelo.pecas || []);
+      setInsumosAdicionais(modelo.insumosAdicionais || []);
     } else {
       setSku('');
       setNome('');
       setTempoMontagemAdicional(0);
       setPecas([]);
+      setInsumosAdicionais([]);
     }
   }, [modelo]);
 
@@ -81,9 +86,10 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
     setConsumoFilamentoTotal(totalFilamento);
 
     const custoMontagemAdicional = montagemAdicional * (serviceCosts.custoPorMinutoMontagem || 0);
-    setCustoTotal(custoPecas + custoMontagemAdicional);
+    const custoInsumosAdicionais = insumosAdicionais.reduce((acc, item) => acc + (item.insumo.custoPorUnidade || 0) * item.quantidade, 0);
+    setCustoTotal(custoPecas + custoMontagemAdicional + custoInsumosAdicionais);
 
-  }, [pecas, tempoMontagemAdicional, serviceCosts]);
+  }, [pecas, tempoMontagemAdicional, insumosAdicionais, serviceCosts]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -92,6 +98,7 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
       nome,
       tempoMontagemAdicional: parseFloat(tempoMontagemAdicional) || 0,
       pecas: pecas.map(item => ({ pecaId: item.peca.id, quantidade: item.quantidade })),
+      insumosAdicionais: insumosAdicionais.map(item => ({ insumoId: item.insumo.id, quantidade: item.quantidade })),
       tempoImpressao: tempoImpressaoTotal,
       tempoMontagem: tempoMontagemTotal,
       consumoFilamento: consumoFilamentoTotal,
@@ -106,7 +113,11 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
     setPecas(selectedPecas);
   };
 
-  const handleQuantityChange = (pecaId, newQuantity) => {
+  const handleSelectInsumosAdicionais = (selectedInsumos) => {
+    setInsumosAdicionais(selectedInsumos);
+  };
+
+  const handlePecaQuantityChange = (pecaId, newQuantity) => {
     const updatedPecas = pecas.map(item => {
       if (item.peca.id === pecaId) {
         return { ...item, quantidade: newQuantity >= 1 ? newQuantity : 1 };
@@ -114,6 +125,16 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
       return item;
     });
     setPecas(updatedPecas);
+  };
+
+  const handleInsumoQuantityChange = (insumoId, newQuantity) => {
+    const updatedInsumos = insumosAdicionais.map(item => {
+      if (item.insumo.id === insumoId) {
+        return { ...item, quantidade: newQuantity >= 0 ? newQuantity : 0 };
+      }
+      return item;
+    });
+    setInsumosAdicionais(updatedInsumos);
   };
 
   if (!isOpen) return null;
@@ -161,14 +182,25 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
             </div>
           </div>
 
-          <div className="mb-4">
-            <button
-              type="button"
-              onClick={() => setPecaSelectionModalOpen(true)}
-              className="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-            >
-              Selecionar Peças
-            </button>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <button
+                type="button"
+                onClick={() => setPecaSelectionModalOpen(true)}
+                className="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full"
+              >
+                Selecionar Peças
+              </button>
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={() => setInsumoSelectionModalOpen(true)}
+                className="bg-purple-500 text-white px-4 py-2 rounded-md hover:bg-purple-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 w-full"
+              >
+                Selecionar Insumos Adicionais
+              </button>
+            </div>
           </div>
 
           <div className="mb-4">
@@ -184,12 +216,36 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
                     type="number"
                     min="1"
                     value={item.quantidade}
-                    onChange={(e) => handleQuantityChange(item.peca.id, parseInt(e.target.value, 10))}
+                    onChange={(e) => handlePecaQuantityChange(item.peca.id, parseInt(e.target.value, 10))}
                     className="w-24 p-1 border-gray-300 rounded-md shadow-sm"
                   />
                 </div>
               )) : (
                 <p className="text-gray-500 text-center py-4">Nenhuma peça selecionada.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <h3 className="font-semibold text-gray-800">Insumos Adicionais Selecionados:</h3>
+            <div className="mt-2 space-y-2 max-h-48 overflow-y-auto border rounded-md p-2">
+              {insumosAdicionais.length > 0 ? insumosAdicionais.map(item => (
+                <div key={item.insumo.id} className="flex items-center justify-between bg-gray-50 p-2 rounded-md">
+                  <div>
+                    <span className="font-medium">{item.insumo.nome}</span>
+                    <span className="text-sm text-gray-500 ml-2">(Tipo: {item.insumo.tipo}, Unidade: {item.insumo.unidade})</span>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={item.quantidade}
+                    onChange={(e) => handleInsumoQuantityChange(item.insumo.id, parseFloat(e.target.value))}
+                    className="w-24 p-1 border-gray-300 rounded-md shadow-sm"
+                  />
+                </div>
+              )) : (
+                <p className="text-gray-500 text-center py-4">Nenhum insumo adicional selecionado.</p>
               )}
             </div>
           </div>
@@ -236,6 +292,13 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
           onClose={() => setPecaSelectionModalOpen(false)}
           onSelect={handleSelectPecas}
           initialSelectedPecas={pecas}
+        />
+
+        <InsumoSelectionModal
+          isOpen={isInsumoSelectionModalOpen}
+          onClose={() => setInsumoSelectionModalOpen(false)}
+          onSelect={handleSelectInsumosAdicionais}
+          initialSelectedInsumos={insumosAdicionais}
         />
       </div>
     </div>

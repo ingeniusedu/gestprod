@@ -2,7 +2,7 @@
 import { FieldValue, Timestamp } from 'firebase/firestore';
 
 export interface PosicaoEstoque {
-  recipienteId: string;
+  recipienteId?: string; // Made optional
   divisao?: { h: number; v: number };
   quantidade: number;
   localId?: string; // Adicionado para referência direta
@@ -19,9 +19,56 @@ export interface Insumo {
   posicoesEstoque?: PosicaoEstoque[];
   estoqueMinimo: number;
   cor?: string; // para filamentos
-  especificacoes?: Record<string, any>;
+  especificacoes?: {
+    // Filament specific
+    fabricante?: string;
+    tipoFilamento?: string;
+    fornecedor?: string; // Novo campo para fornecedor
+    material?: string;
+    numeroSpools?: number;
+    tamanhoSpool?: string;
+    valorPagoPorSpool?: number;
+    spoolNumero?: number;
+    autoNumberSpool?: boolean;
+    aberto?: boolean;
+    dataAbertura?: string;
+    pesoBruto?: number;
+    pesoLiquido?: number;
+    dataUltimaPesagem?: string;
+    finalizadoEm?: boolean;
+    dataFinalizacao?: string;
+    lote?: string;
+    dataFabricacao?: string;
+    dataCompra?: string;
+    operacoes?: string[];
+    consumoProducao?: number;
+    consumoReal?: number;
+
+    // Embalagem specific
+    tipoEmbalagem?: string;
+    materialEmbalagem?: string;
+    altura?: number;
+    largura?: number;
+    profundidade?: number;
+    quantidade?: number;
+    valorTotalPago?: number;
+    valorFrete?: number;
+    dataCompraEmbalagem?: string;
+
+    // Material specific
+    tipoMaterial?: string; // e.g., "cola", "ímã circular", "placa"
+    materialAssociado?: string; // e.g., "Acetato de Vinila", "Neodímio", "Aço"
+
+    // Tempo specific
+    valorHora?: number;
+
+    [key: string]: any; // Allow other arbitrary properties
+  };
   grupoFilamentoId?: string; // Referência ao ID do documento na coleção gruposDeFilamento
   estoqueTotal?: number; // Added for consistency with other product types
+  status?: 'aberto' | 'fechado'; // Novo campo para spools de filamento
+  dataAbertura?: Timestamp; // Novo campo para spools de filamento
+  consumoProducao?: number; // Novo campo para registrar consumo na produção
 }
 
 export interface GrupoDeFilamento {
@@ -34,6 +81,7 @@ export interface GrupoDeFilamento {
   estoqueTotalGramas: number;
   spoolsEmEstoqueIds: string[]; // array com os IDs dos insumos/spools
   updatedAt: any; // Firestore Timestamp
+  consumoProducao?: number; // Novo campo para registrar consumo na produção do grupo
 }
 
 export interface PecaInsumo {
@@ -63,8 +111,9 @@ export interface Peca {
 export interface GrupoImpressao {
   id: string;
   nome: string;
-  filamentos: PecaInsumo[];
-  partes: PecaParte[]; // Changed to use PecaParte interface directly
+  filamentos: PecaInsumo[]; // This will now strictly contain only filament types
+  outrosInsumos?: PecaInsumo[]; // New field for materials, time, others
+  partes: PecaParte[];
   tempoImpressao: number;
   quantidadeMaxima?: number;
 }
@@ -82,6 +131,10 @@ export interface Modelo {
   nome: string;
   pecas: {
     pecaId: string;
+    quantidade: number;
+  }[];
+  insumosAdicionais?: {
+    insumoId: string;
     quantidade: number;
   }[];
   tempoMontagem: number; // tempo adicional de montagem
@@ -140,6 +193,16 @@ export interface Pedido {
   productionGroups?: ProductionGroup[]; // New field
 }
 
+export interface ProductionGroupInsumo {
+  id: string; // Insumo ID
+  nome: string;
+  quantidade: number;
+  tipo: string; // e.g., 'material', 'tempo', 'outros'
+  etapaInstalacao?: 'impressao' | 'montagem'; // For materials
+  estoqueAtualInsumo?: number; // Current stock of this specific insumo
+  localEstoqueInsumo?: PosicaoEstoque[]; // Where the insumo stock is located
+}
+
 export interface ProductionGroup {
   id: string; // Unique ID for the production group (e.g., combination of pedidoId and group index)
   sourceId: string; // ID of the original product (peca, modelo, kit)
@@ -166,6 +229,7 @@ export interface ProductionGroup {
     estoqueAtualFilamento?: number; // Current stock of this specific filament
     localEstoqueFilamento?: PosicaoEstoque[]; // Where the filament stock is located
   }[];
+  outrosInsumosNecessarios?: ProductionGroupInsumo[]; // New field for other insumos
   tempoImpressaoGrupo: number;
   consumoFilamentoGrupo: number;
   status: 'aguardando' | 'em_producao' | 'produzido' | 'em_montagem' | 'montado' | 'concluido';
@@ -227,20 +291,33 @@ export interface Parte {
   isNova?: boolean;
 }
 
-export interface EstoqueLancamento {
+export interface LancamentoProduto {
   id: string;
-  tipoProduto: 'partes' | 'pecas' | 'modelos' | 'kits' | 'insumos'; // Changed to plural
-  produtoId: string; // ID do item (Parte, Peca, Modelo, Kit, Insumo)
-  tipoMovimento: 'entrada' | 'saida' | 'ajuste'; // Tipo de movimento (adição, remoção, correção)
-  usuario: string; // Usuário que realizou o lançamento
-  observacao?: string; // Observações adicionais
-  data?: Timestamp; // Added data field
-  locais: { // Array de locais movimentados
-    recipienteId: string;
+  tipoProduto: 'partes' | 'pecas' | 'modelos' | 'kits';
+  produtoId: string;
+  tipoMovimento: 'entrada' | 'saida' | 'ajuste';
+  usuario: string;
+  observacao?: string;
+  data?: Timestamp;
+  locais: {
+    recipienteId?: string;
     divisao?: { h: number; v: number };
     quantidade: number;
-    localId: string; // Adicionado para referência direta
+    localId?: string;
   }[];
+}
+
+export interface LancamentoInsumo {
+  id: string;
+  insumoId: string;
+  tipoInsumo: 'filamento' | 'tempo' | 'material' | 'outros';
+  tipoMovimento: 'entrada' | 'saida' | 'ajuste';
+  quantidade: number;
+  unidadeMedida?: string; // Made optional as it might not be relevant for all insumos in a lancamento
+  data?: Timestamp; // Renamed from dataLancamento for consistency
+  origem?: string; // Made optional
+  detalhes?: string; // Renamed from observacao for consistency
+  locais?: PosicaoEstoque[];
 }
 
 export interface Produto {

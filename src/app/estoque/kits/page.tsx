@@ -5,11 +5,11 @@ import { Plus, Search, Gift, Edit, Trash2, Settings, List, Grid } from 'lucide-r
 import KitFormModal from '../../components/KitFormModal';
 import ServiceCostModal from '../../components/ServiceCostModal';
 import ModeloDetailsModal from '../../components/ModeloDetailsModal';
-import { db, auth, getLocaisDeEstoque, getRecipientes } from '../../services/firebase';
+import { db, auth, getLocaisProdutos, getLocaisInsumos, getRecipientes } from '../../services/firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, getDoc, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Kit, Modelo, Peca, Insumo, PosicaoEstoque } from '../../types';
-import { LocalDeEstoque, Recipiente } from '../../types/mapaEstoque';
+import { LocalProduto, LocalInsumo, Recipiente } from '../../types/mapaEstoque';
 
 export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchTerm = '' }) {
   const [searchTerm, setSearchTerm] = useState(propSearchTerm);
@@ -29,7 +29,7 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
   const [modelos, setModelos] = useState<Modelo[]>([]); // Needed for calculating kit costs
   const [pecas, setPecas] = useState<Peca[]>([]); // Needed for calculating modelo costs within kits
   const [insumos, setInsumos] = useState<Insumo[]>([]); // Needed for calculating peca/modelo costs within kits
-  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalDeEstoque[]>([]);
+  const [locaisDeEstoque, setLocaisDeEstoque] = useState<(LocalProduto | LocalInsumo)[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
 
   useEffect(() => {
@@ -45,16 +45,16 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
             const modelosCollection = collection(db, 'modelos');
             const pecasCollection = collection(db, 'pecas');
             const insumosCollection = collection(db, 'insumos');
-            const locaisDeEstoqueCollection = collection(db, 'locaisDeEstoque');
             const recipientesCollection = collection(db, 'recipientes');
 
-            const [kitsSnapshot, modelosSnapshot, pecasSnapshot, insumosSnapshot, locaisSnapshot, recipientesSnapshot] = await Promise.all([
+            const [kitsSnapshot, modelosSnapshot, pecasSnapshot, insumosSnapshot, recipientesSnapshot, locaisProdutosSnapshot, locaisInsumosSnapshot] = await Promise.all([
               getDocs(kitsCollection),
               getDocs(modelosCollection),
               getDocs(pecasCollection),
               getDocs(insumosCollection),
-              getDocs(locaisDeEstoqueCollection),
-              getDocs(recipientesCollection)
+              getDocs(recipientesCollection),
+              getLocaisProdutos(), // Use the specific function
+              getLocaisInsumos()   // Use the specific function
             ]);
 
             setKits(kitsSnapshot.docs.map(doc => {
@@ -80,8 +80,8 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
             setModelos(enrichedModelos);
             setPecas(fetchedPecas);
             setInsumos(fetchedInsumos);
-            setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalDeEstoque[]);
             setRecipientes(recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[]);
+            setLocaisDeEstoque([...locaisProdutosSnapshot, ...locaisInsumosSnapshot] as (LocalProduto | LocalInsumo)[]); // Combine both
 
             const serviceCostsRef = doc(db, 'settings', 'serviceCosts');
             const serviceCostsSnap = await getDoc(serviceCostsRef);
@@ -113,14 +113,16 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
     return uniqueLocations.join(', ');
   };
 
-  const filteredKits = kits.filter(kit => {
-    const kitLocal = getLocalString(kit.posicoesEstoque || []);
-    return (
-      kit.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      kit.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      kitLocal.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  });
+  const filteredKits = kits
+    .filter(kit => {
+      const kitLocal = getLocalString(kit.posicoesEstoque || []);
+      return (
+        kit.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        kit.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        kitLocal.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    })
+    .sort((a, b) => a.sku.localeCompare(b.sku));
 
   const openModal = (kit: Kit | null = null) => {
     setKitToEdit(kit);
@@ -247,131 +249,83 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
 
   const handleSelectAllKits = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
-      setSelectedKits(filteredKits.map(k => k.id!));
+      setSelectedKits(filteredKits.map(k => k.id as string));
     } else {
       setSelectedKits([]);
     }
   };
 
-  const renderKitCard = (kit: Kit) => (
-    <div key={kit.id} className={`bg-white shadow rounded-lg p-6 hover:shadow-md transition-shadow relative group ${selectedKits.includes(kit.id!) ? 'ring-2 ring-blue-500' : ''}`}>
-      <input
-        type="checkbox"
-        className="absolute top-2 left-2 h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity"
-        checked={selectedKits.includes(kit.id!)}
-        onChange={() => handleSelectKit(kit.id!)}
-      />
-      <div className="flex justify-between items-start mb-4">
-        <div>
-          <h3 className="text-lg font-medium text-gray-900">{kit.nome}</h3>
-          <p className="text-sm text-gray-500">SKU: {kit.sku}</p>
-        </div>
-        <Gift className="h-8 w-8 text-blue-500" />
-      </div>
-      
-      <div className="space-y-2 mb-4">
-        <div className="text-sm text-gray-600">
-          <strong>Componentes inclusos:</strong>
-        </div>
-        {kit.modelos && kit.modelos.length > 0 ? (
-          kit.modelos.map((comp, index) => (
-            <div
-              key={index}
-              className="text-sm text-gray-500 ml-2 cursor-pointer hover:text-blue-600 hover:underline"
-              onClick={() => {
-                const modelo = modelos.find(m => m.id === comp.modeloId);
-                if (modelo) {
-                  openModeloDetailsModal(modelo);
-                } else {
-                  console.warn(`Modelo with ID ${comp.modeloId} not found.`);
-                }
-              }}
-            >
-              • {modelos.find(m => m.id === comp.modeloId)?.nome || 'Modelo Desconhecido'} (x{comp.quantidade})
-            </div>
-          ))
-        ) : (
-          <div className="text-sm text-gray-500 ml-2">Nenhum componente.</div>
-        )}
-        <div className="text-sm text-gray-600">
-          <strong>Estoque Total:</strong> {kit.estoqueTotal || 0}
-        </div>
-        <div className="text-sm text-gray-600">
-          <strong>Local(is):</strong> {getLocalString(kit.posicoesEstoque || [])}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 text-sm">
-        <div>
-          <span className="text-gray-500">Custo:</span>
-          <div className="font-medium text-gray-900">R$ {kit.custoCalculado?.toFixed(2) || '0.00'}</div>
-        </div>
-        <div>
-          <span className="text-gray-500">Preço Sugerido:</span>
-          <div className="font-medium text-green-600">R$ {kit.precoSugerido?.toFixed(2) || '0.00'}</div>
-        </div>
-        <div>
-          <span className="text-gray-500">Tempo Montagem:</span>
-          <div className="font-medium text-gray-900">{kit.tempoMontagem || '0'}min</div>
-        </div>
-        <div>
-          <span className="text-gray-500">Margem:</span>
-          <div className="font-medium text-blue-600">
-            {kit.custoCalculado > 0 ? (((kit.precoSugerido - kit.custoCalculado) / kit.custoCalculado) * 100).toFixed(1) : '0.0'}%
-          </div>
-        </div>
-      </div>
-      <div className="flex justify-end mt-4">
-        <button
-          onClick={() => handleEditKit(kit)}
-          className="text-blue-600 hover:text-blue-900 p-1 rounded-full hover:bg-blue-100"
-          title="Editar Kit"
-        >
-          <Edit className="h-5 w-5" />
-        </button>
-        <button
-          onClick={() => handleDeleteProduto(kit.id!, 'kit')}
-          className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
-          title="Deletar Kit"
-        >
-          <Trash2 className="h-5 w-5" />
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderKitListRow = (kit: Kit) => (
-    <tr key={kit.id} className={`hover:bg-gray-50 ${selectedKits.includes(kit.id!) ? 'bg-blue-50' : ''}`}>
-      <td className="px-6 py-4 whitespace-nowrap">
+  const renderKitCard = (kit: Kit) => {
+    if (!kit.id) return null; // Ensure kit.id is defined
+    return (
+      <div key={kit.id} className={`bg-white shadow rounded-lg p-6 hover:shadow-md transition-shadow relative group ${selectedKits.includes(kit.id as string) ? 'ring-2 ring-blue-500' : ''}`}>
         <input
           type="checkbox"
-          checked={selectedKits.includes(kit.id!)}
-          onChange={() => handleSelectKit(kit.id!)}
+          className="absolute top-2 left-2 h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity"
+          checked={selectedKits.includes(kit.id as string)}
+          onChange={() => handleSelectKit(kit.id as string)}
         />
-      </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{kit.sku}</td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kit.nome}</td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-        {kit.modelos && kit.modelos.length > 0 ? (
-          kit.modelos.map((comp, index) => (
-            <span key={index} className="block">
-              • {modelos.find(m => m.id === comp.modeloId)?.nome || 'Modelo Desconhecido'} (x{comp.quantidade})
-            </span>
-          ))
-        ) : (
-          <span>Nenhum</span>
-        )}
-      </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kit.tempoMontagem || '0'} min</td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {kit.custoCalculado?.toFixed(2) || '0.00'}</td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {kit.precoSugerido?.toFixed(2) || '0.00'}</td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-        {kit.custoCalculado > 0 ? (((kit.precoSugerido - kit.custoCalculado) / kit.custoCalculado) * 100).toFixed(1) : '0.0'}%
-      </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kit.estoqueTotal || 0}</td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getLocalString(kit.posicoesEstoque || [])}</td>
-      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-        <div className="flex items-center justify-end">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h3 className="text-lg font-medium text-gray-900">{kit.nome}</h3>
+            <p className="text-sm text-gray-500">SKU: {kit.sku}</p>
+          </div>
+          <Gift className="h-8 w-8 text-blue-500" />
+        </div>
+        
+        <div className="space-y-2 mb-4">
+          <div className="text-sm text-gray-600">
+            <strong>Componentes inclusos:</strong>
+          </div>
+          {kit.modelos && kit.modelos.length > 0 ? (
+            kit.modelos.map((comp, index) => (
+              <div
+                key={index}
+                className="text-sm text-gray-500 ml-2 cursor-pointer hover:text-blue-600 hover:underline"
+                onClick={() => {
+                  const modelo = modelos.find(m => m.id === comp.modeloId);
+                  if (modelo) {
+                    openModeloDetailsModal(modelo);
+                  } else {
+                    console.warn(`Modelo with ID ${comp.modeloId} not found.`);
+                  }
+                }}
+              >
+                • {modelos.find(m => m.id === comp.modeloId)?.nome || 'Modelo Desconhecido'} (x{comp.quantidade})
+              </div>
+            ))
+          ) : (
+            <div className="text-sm text-gray-500 ml-2">Nenhum componente.</div>
+          )}
+          <div className="text-sm text-gray-600">
+            <strong>Estoque Total:</strong> {kit.estoqueTotal || 0}
+          </div>
+          <div className="text-sm text-gray-600">
+            <strong>Local(is):</strong> {getLocalString(kit.posicoesEstoque || [])}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <span className="text-gray-500">Custo:</span>
+            <div className="font-medium text-gray-900">R$ {kit.custoCalculado?.toFixed(2) || '0.00'}</div>
+          </div>
+          <div>
+            <span className="text-gray-500">Preço Sugerido:</span>
+            <div className="font-medium text-green-600">R$ {kit.precoSugerido?.toFixed(2) || '0.00'}</div>
+          </div>
+          <div>
+            <span className="text-gray-500">Tempo Montagem:</span>
+            <div className="font-medium text-gray-900">{kit.tempoMontagem || '0'}min</div>
+          </div>
+          <div>
+            <span className="text-gray-500">Margem:</span>
+            <div className="font-medium text-blue-600">
+              {kit.custoCalculado > 0 ? (((kit.precoSugerido - kit.custoCalculado) / kit.custoCalculado) * 100).toFixed(1) : '0.0'}%
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end mt-4">
           <button
             onClick={() => handleEditKit(kit)}
             className="text-blue-600 hover:text-blue-900 p-1 rounded-full hover:bg-blue-100"
@@ -380,16 +334,70 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
             <Edit className="h-5 w-5" />
           </button>
           <button
-            onClick={() => handleDeleteProduto(kit.id!, 'kit')}
+            onClick={() => handleDeleteProduto(kit.id as string, 'kit')}
             className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
             title="Deletar Kit"
           >
             <Trash2 className="h-5 w-5" />
           </button>
         </div>
-      </td>
-    </tr>
-  );
+      </div>
+    );
+  };
+
+  const renderKitListRow = (kit: Kit) => {
+    if (!kit.id) return null; // Ensure kit.id is defined
+    return (
+      <tr key={kit.id} className={`hover:bg-gray-50 ${selectedKits.includes(kit.id as string) ? 'bg-blue-50' : ''}`}>
+        <td className="px-6 py-4 whitespace-nowrap">
+          <input
+            type="checkbox"
+            checked={selectedKits.includes(kit.id as string)}
+            onChange={() => handleSelectKit(kit.id as string)}
+          />
+        </td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{kit.sku}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kit.nome}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+          {kit.modelos && kit.modelos.length > 0 ? (
+            kit.modelos.map((comp, index) => (
+              <span key={index} className="block">
+                • {modelos.find(m => m.id === comp.modeloId)?.nome || 'Modelo Desconhecido'} (x{comp.quantidade})
+              </span>
+            ))
+          ) : (
+            <span>Nenhum</span>
+          )}
+        </td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kit.tempoMontagem || '0'} min</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {kit.custoCalculado?.toFixed(2) || '0.00'}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {kit.precoSugerido?.toFixed(2) || '0.00'}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+          {kit.custoCalculado > 0 ? (((kit.precoSugerido - kit.custoCalculado) / kit.custoCalculado) * 100).toFixed(1) : '0.0'}%
+        </td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kit.estoqueTotal || 0}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getLocalString(kit.posicoesEstoque || [])}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+          <div className="flex items-center justify-end">
+            <button
+              onClick={() => handleEditKit(kit)}
+              className="text-blue-600 hover:text-blue-900 p-1 rounded-full hover:bg-blue-100"
+              title="Editar Kit"
+            >
+              <Edit className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => handleDeleteProduto(kit.id as string, 'kit')}
+              className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100 ml-2"
+              title="Deletar Kit"
+            >
+              <Trash2 className="h-5 w-5" />
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  };
 
   if (isOnlyButton) {
     return (

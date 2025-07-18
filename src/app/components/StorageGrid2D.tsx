@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LocalDeEstoque, Recipiente } from '../types/mapaEstoque';
+import { LocalDeEstoque, LocalDeInsumo, Recipiente } from '../types/mapaEstoque';
 import { Produto } from '../types'; // Import the correct Produto type
 
 interface Dimensoes {
@@ -11,7 +11,7 @@ interface Dimensoes {
 import { Edit, Gift, Box, Puzzle, Layers } from 'lucide-react';
 
 interface StorageGrid2DProps {
-  local: LocalDeEstoque;
+  local: LocalDeEstoque | LocalDeInsumo;
   recipientes: Recipiente[];
   produtos: Produto[]; // Add produtos prop
   onRecipienteClick?: (recipiente: Recipiente) => void;
@@ -23,7 +23,8 @@ interface StorageGrid2DProps {
 const CELL_SIZE = 80; // Increased cell size for better visibility
 
 const StorageGrid2D: React.FC<StorageGrid2DProps> = ({ local, recipientes, produtos, onRecipienteClick, onMoveRecipiente, onEditStockClick, currentZLevel }) => {
-  const { dimensoesGrade } = local;
+  // Assert dimensoesGrade is present because the parent component only renders this if local.dimensoesGrade exists
+  const dimensoesGrade = local.dimensoesGrade!; 
   const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number; z: number } | null>(null);
   const [draggedItemDimensions, setDraggedItemDimensions] = useState<{ x: number; y: number; z: number } | null>(null);
 

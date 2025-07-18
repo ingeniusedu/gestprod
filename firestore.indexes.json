@@ -17,6 +17,32 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "insumos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "grupoFilamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataFabricacao",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estoqueTotal",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

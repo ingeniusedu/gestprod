@@ -23,7 +23,8 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
         nome: initialData.nome || '',
         isComposta: initialData.isComposta || false,
         tempoMontagem: initialData.tempoMontagem || '',
-        gruposImpressao: initialData.gruposImpressao || []
+        gruposImpressao: initialData.gruposImpressao || [],
+        outrosInsumos: initialData.outrosInsumos || [], // Load new field
       });
     } else if (isOpen) {
       // Reset form when opening for a new peca
@@ -32,13 +33,14 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
         nome: '',
         isComposta: false,
         tempoMontagem: '',
-        gruposImpressao: [{
-          id: `grupo-${Date.now()}`,
-          nome: 'Grupo Principal',
-          filamentos: [], // Initialize with empty array to allow adding any type of insumo
-          partes: [],
-          tempoImpressao: '',
-        }]
+          gruposImpressao: [{
+            id: `grupo-${Date.now()}`,
+            nome: 'Grupo Principal',
+            filamentos: [],
+            outrosInsumos: [], // Initialize new field
+            partes: [],
+            tempoImpressao: '',
+          }]
       });
     }
   }, [initialData, isOpen]);
@@ -56,19 +58,20 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
       if (!grupo.nome || !grupo.tempoImpressao || Number(grupo.tempoImpressao) <= 0) {
         return false;
       }
-      if (grupo.filamentos.length === 0) return false;
-      for (const insumo of grupo.filamentos) {
-        if (insumo.tipo === 'filamento') {
-          if (!insumo.grupoFilamentoId || !insumo.quantidade || Number(insumo.quantidade) <= 0) {
-            return false;
-          }
-        } else { // material, tempo, outros
-          if (!insumo.insumoId || !insumo.quantidade || Number(insumo.quantidade) <= 0) {
-            return false;
-          }
-          if (insumo.tipo === 'material' && !insumo.etapaInstalacao) {
-            return false;
-          }
+      if (grupo.filamentos.length === 0 && (grupo.outrosInsumos || []).length === 0) return false; // Must have at least one insumo
+      
+      for (const insumo of grupo.filamentos) { // Validate filaments
+        if (!insumo.grupoFilamentoId || !insumo.quantidade || Number(insumo.quantidade) <= 0) {
+          return false;
+        }
+      }
+
+      for (const insumo of (grupo.outrosInsumos || [])) { // Validate other insumos
+        if (!insumo.insumoId || !insumo.quantidade || Number(insumo.quantidade) <= 0) {
+          return false;
+        }
+        if (insumo.tipo === 'material' && !insumo.etapaInstalacao) {
+          return false;
         }
       }
       // If it's a composite piece, ensure parts are present for each group
