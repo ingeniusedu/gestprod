@@ -4,31 +4,51 @@ import React, { useState, useEffect } from 'react';
 import { X, Search } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { Insumo } from '../types';
 
-export default function InsumoSelectionModal({ isOpen, onClose, onSelect, initialSelectedInsumos = [] }) {
-  const [insumos, setInsumos] = useState([]);
+interface InsumoSelectionModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSelect: (insumo: Insumo, quantidade: number) => void;
+  initialSelectedInsumos?: { insumo: Insumo, quantidade: number }[];
+  insumoTipoFilter?: string | null;
+}
+
+export default function InsumoSelectionModal({ 
+  isOpen, 
+  onClose, 
+  onSelect, 
+  initialSelectedInsumos = [], 
+  insumoTipoFilter = null 
+}: InsumoSelectionModalProps) {
+  const [insumos, setInsumos] = useState<Insumo[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedInsumos, setSelectedInsumos] = useState(new Map());
-  const [filterEmbalagem, setFilterEmbalagem] = useState(false);
-  const [filterMaterial, setFilterMaterial] = useState(false);
+  const [selectedInsumos, setSelectedInsumos] = useState<Map<string, { insumo: Insumo, quantidade: number }>>(new Map());
+  const [filterEmbalagem, setFilterEmbalagem] = useState(insumoTipoFilter === 'embalagem');
+  const [filterMaterial, setFilterMaterial] = useState(insumoTipoFilter === 'material');
 
   useEffect(() => {
     if (isOpen) {
       const fetchInsumos = async () => {
         const insumosCollection = collection(db, 'insumos');
         const insumosSnapshot = await getDocs(insumosCollection);
-        const insumosList = insumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(insumo => insumo.tipo !== 'filamento');
+        let insumosList = insumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Insumo)).filter(insumo => insumo.tipo !== 'filamento');
+        
+        if (insumoTipoFilter) {
+          insumosList = insumosList.filter(insumo => insumo.tipo === insumoTipoFilter);
+        }
+        
         setInsumos(insumosList);
       };
       fetchInsumos();
 
-      const initialMap = new Map();
+      const initialMap = new Map<string, { insumo: Insumo, quantidade: number }>();
       initialSelectedInsumos.forEach(item => initialMap.set(item.insumo.id, { insumo: item.insumo, quantidade: item.quantidade }));
       setSelectedInsumos(initialMap);
     }
-  }, [isOpen, initialSelectedInsumos]);
+  }, [isOpen, initialSelectedInsumos, insumoTipoFilter]);
 
-  const handleToggleInsumo = (insumo) => {
+  const handleToggleInsumo = (insumo: Insumo) => {
     setSelectedInsumos(prev => {
       const newMap = new Map(prev);
       if (newMap.has(insumo.id)) {
@@ -40,27 +60,41 @@ export default function InsumoSelectionModal({ isOpen, onClose, onSelect, initia
     });
   };
 
-  const handleQuantityChange = (insumoId, quantidade) => {
+  const handleQuantityChange = (insumoId: string, quantidade: number) => {
     setSelectedInsumos(prev => {
       const newMap = new Map(prev);
       if (newMap.has(insumoId)) {
         const item = newMap.get(insumoId);
-        item.quantidade = quantidade;
-        newMap.set(insumoId, item);
+        if (item) {
+          item.quantidade = quantidade;
+          newMap.set(insumoId, item);
+        }
       }
       return newMap;
     });
   };
 
   const handleConfirmSelection = () => {
-    onSelect(Array.from(selectedInsumos.values()));
+    const selectedArray = Array.from(selectedInsumos.values());
+    if (selectedArray.length === 1) {
+      const singleSelection = selectedArray[0];
+      onSelect(singleSelection.insumo, singleSelection.quantidade);
+    } else {
+      // This case needs to be handled based on how you want to support multiple selections.
+      // For now, it will only work correctly for a single selection as per the onSelect signature.
+      // If multiple selections are needed, the onSelect prop type should be updated.
+      if (selectedArray.length > 0) {
+        const firstSelection = selectedArray[0];
+        onSelect(firstSelection.insumo, firstSelection.quantidade);
+      }
+    }
     onClose();
   };
 
   const filteredInsumos = insumos.filter(insumo => {
     const searchMatch = insumo.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      insumo.tipo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      insumo.unidade.toLowerCase().includes(searchTerm.toLowerCase());
+      (insumo.tipo && insumo.tipo.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (insumo.unidade && insumo.unidade.toLowerCase().includes(searchTerm.toLowerCase()));
 
     const typeMatch = (!filterEmbalagem && !filterMaterial) ||
       (filterEmbalagem && insumo.tipo === 'embalagem') ||

@@ -44,7 +44,7 @@ export default function Estoque() {
     const colorMap = {
       'Amarelo': '#FFD700', 'Areia': '#C2B280', 'Azul': '#0000FF', 'Azul Bebê': '#89CFF0',
       'Azul Cyan': '#00FFFF', 'Azul macaron': '#ADD8E6', 'Azul Tiffany': '#0ABAB5',
-      'Branco': '#FFFFFF', 'Cappuccino': '#6F4E37', 'Caucasiano': '#F0DCB0',
+      'Branco': '#E0E0E0', 'Cappuccino': '#6F4E37', 'Caucasiano': '#F0DCB0',
       'Cinza Nintendo': '#808080', 'Laranja': '#FFA500', 'Laranja macaron': '#FFDAB9',
       'Magenta': '#FF00FF', 'Marrom': '#A52A2A', 'Natural': '#F5F5DC',
       'Preto': '#000000', 'Rosa Bebê': '#F4C2C2', 'Rosa macaron': '#FFB6C1',
@@ -351,32 +351,23 @@ export default function Estoque() {
   const groupFilaments = (filaments) => {
     const grouped = {};
     filaments.forEach(spool => {
-      const key = spool.grupoFilamento;
+      // Create a more robust key for grouping: fabricante, material, and cor
+      const key = `${spool.especificacoes?.fabricante || 'N/A'}-${spool.especificacoes?.material || 'N/A'}-${spool.cor || 'N/A'}`;
+
       if (!grouped[key]) {
         grouped[key] = {
           id: `grouped-filament-${key}`,
           key,
-          grupoFilamento: spool.grupoFilamento,
+          grupoFilamento: spool.grupoFilamento, // Keep for display if needed, but not for grouping key
           totalSpools: 0,
           totalWeight: 0,
           totalCost: 0,
           spools: [],
           hasClosedSpool: false,
           cor: spool.cor,
-          fabricante: spool.especificacoes.fabricante, // Add fabricante to group
-          material: spool.especificacoes.material,     // Add material to group
+          fabricante: spool.especificacoes.fabricante,
+          material: spool.especificacoes.material,
         };
-      } else {
-        if (!grouped[key].cor && spool.cor && typeof spool.cor === 'string' && spool.cor.trim() !== '') {
-            grouped[key].cor = spool.cor;
-        }
-        // Ensure fabricante and material are consistent across spools in the same group
-        if (!grouped[key].fabricante && spool.especificacoes.fabricante) {
-            grouped[key].fabricante = spool.especificacoes.fabricante;
-        }
-        if (!grouped[key].material && spool.especificacoes.material) {
-            grouped[key].material = spool.especificacoes.material;
-        }
       }
       grouped[key].totalSpools += 1;
       grouped[key].totalWeight += parseFloat(spool.estoqueAtual || 0);
@@ -386,10 +377,19 @@ export default function Estoque() {
         grouped[key].hasClosedSpool = true;
       }
     });
+
     const sortedGroupedFilaments = Object.values(grouped).sort((a, b) => {
-      const colorA = a.cor || '';
-      const colorB = b.cor || '';
-      return colorA.localeCompare(colorB);
+      // Sort by fabricante, then material, then color
+      const fabA = a.fabricante || '';
+      const fabB = b.fabricante || '';
+      const matA = a.material || '';
+      const matB = b.material || '';
+      const corA = a.cor || '';
+      const corB = b.cor || '';
+
+      if (fabA !== fabB) return fabA.localeCompare(fabB);
+      if (matA !== matB) return matA.localeCompare(matB);
+      return corA.localeCompare(corB);
     });
 
     sortedGroupedFilaments.forEach(group => {
@@ -703,14 +703,9 @@ export default function Estoque() {
                                 <div className="flex items-center">
                                   {isExpanded ? <ChevronUp className="h-4 w-4 mr-2 text-gray-500" /> : <ChevronDown className="h-4 w-4 mr-2 text-gray-500" />}
                                   <div>
-                                    <div className="text-sm font-medium text-gray-900">
-                                      {item.fabricante} {item.material}
-                                    </div>
-                                    {item.cor && (
-                                      <div className="text-sm text-gray-500">
-                                        Cor: {item.cor}
-                                      </div>
-                                    )}
+                                  <div className="text-sm font-medium text-gray-900">
+                                    {item.fabricante} {item.material} {item.cor}
+                                  </div>
                                   </div>
                                 </div>
                               </td>

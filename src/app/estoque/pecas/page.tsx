@@ -7,7 +7,7 @@ import ServiceCostModal from '../../components/ServiceCostModal';
 import { db, auth, addParte, updateParte, addPeca, updatePeca, deletePecas, deletePeca, getLocaisProdutos, getRecipientes } from '../../services/firebase';
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
-import { Peca, PosicaoEstoque, Insumo, Parte, GrupoImpressao, PecaInsumo, Produto, Modelo, Kit, PecaParte } from '../../types';
+import { Peca, PosicaoEstoque, Insumo, Parte, GrupoImpressao, PecaInsumo, Produto, Modelo, Kit, PecaParte, GrupoDeFilamento } from '../../types';
 import { LocalProduto, Recipiente } from '../../types/mapaEstoque';
 import EstoqueLancamentoModal from '../../components/EstoqueLancamentoModal'; // Ensure this import is present
 
@@ -40,7 +40,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
     const colorMap: { [key: string]: string } = {
       'Amarelo': '#FFD700', 'Areia': '#C2B280', 'Azul': '#0000FF', 'Azul Bebê': '#89CFF0',
       'Azul Cyan': '#00FFFF', 'Azul macaron': '#ADD8E6', 'Azul Tiffany': '#0ABAB5',
-      'Branco': '#FFFFFF', 'Cappuccino': '#6F4E37', 'Caucasiano': '#F0DCB0',
+      'Branco': '#E0E0E0', 'Cappuccino': '#6F4E37', 'Caucasiano': '#F0DCB0',
       'Cinza Nintendo': '#808080', 'Laranja': '#FFA500', 'Laranja macaron': '#FFDAB9',
       'Magenta': '#FF00FF', 'Marrom': '#A52A2A', 'Natural': '#F5F5DC',
       'Preto': '#000000', 'Rosa Bebê': '#F4C2C2', 'Rosa macaron': '#FFB6C1',
@@ -61,8 +61,6 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       const kitsCollection = collection(db, 'kits');
       const locaisDeEstoqueCollection = collection(db, 'locaisProdutos');
       const recipientesCollection = collection(db, 'recipientes');
-      const gruposDeFilamentoCollection = collection(db, 'gruposDeFilamento');
-
       const [
         pecasSnapshot,
         insumosSnapshot,
@@ -71,16 +69,14 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         kitsSnapshot,
         locaisSnapshot,
         recipientesSnapshot,
-        gruposDeFilamentoSnapshot
       ] = await Promise.all([
-        getDocs(pecasCollection),
-        getDocs(insumosCollection),
-        getDocs(partesCollection),
-        getDocs(modelosCollection),
-        getDocs(kitsCollection),
-        getDocs(locaisDeEstoqueCollection),
-        getDocs(recipientesCollection),
-        getDocs(gruposDeFilamentoCollection)
+        getDocs(collection(db, 'pecas')),
+        getDocs(collection(db, 'insumos')),
+        getDocs(collection(db, 'partes')),
+        getDocs(collection(db, 'modelos')),
+        getDocs(collection(db, 'kits')),
+        getDocs(collection(db, 'locaisProdutos')),
+        getDocs(collection(db, 'recipientes')),
       ]);
 
       const fetchedPecas = pecasSnapshot.docs.map(doc => {
@@ -92,6 +88,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
           sku: data.sku || '',
           nome: data.nome || '',
           isComposta: data.isComposta || false,
+          tipoPeca: data.tipoPeca || 'simples',
           gruposImpressao: data.gruposImpressao || [],
           tempoMontagem: data.tempoMontagem || 0,
           custoCalculado: data.custoCalculado || 0,
@@ -115,9 +112,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
           custoPorUnidade: data.custoPorUnidade || 0,
           posicoesEstoque: posicoes,
           estoqueMinimo: data.estoqueMinimo || 0,
-          cor: data.cor || '',
           especificacoes: data.especificacoes || {},
-          grupoFilamentoId: data.grupoFilamentoId || '',
           estoqueTotal,
           tipoProduto: 'insumo'
         } as Insumo;
@@ -176,14 +171,67 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         } as Produto;
       });
 
-      setPecas(fetchedPecas);
+      // Fetch service costs and filament groups first, as they are needed for cost calculation
+      const serviceCostsRef = doc(db, 'settings', 'serviceCosts');
+      const serviceCostsSnap = await getDoc(serviceCostsRef);
+      const currentServiceCosts = serviceCostsSnap.exists() ? serviceCostsSnap.data() as { custoPorMinutoImpressao: number; custoPorMinutoMontagem: number; custoPorGramaFilamento: number; } : { custoPorMinutoImpressao: 0, custoPorMinutoMontagem: 0, custoPorGramaFilamento: 0 };
+      setServiceCosts(currentServiceCosts);
+
+      const gruposDeFilamentoSnapshot = await getDocs(collection(db, 'gruposDeFilamento'));
+      const fetchedGruposDeFilamento = gruposDeFilamentoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as GrupoDeFilamento[];
+      setGruposDeFilamento(fetchedGruposDeFilamento);
+
+      // Recalculate costs for fetchedPecas
+      const pecasWithRecalculatedCosts = fetchedPecas.map(peca => {
+        let totalFilamentCost = 0;
+        let totalImpressionTime = 0;
+        let totalOtherInsumosCost = 0;
+
+        for (const grupo of peca.gruposImpressao) {
+          totalImpressionTime += Number(grupo.tempoImpressao || 0);
+          if (grupo.filamentos && Array.isArray(grupo.filamentos)) {
+            for (const fil of grupo.filamentos) {
+              if (fil.quantidade > 0 && fil.grupoFilamentoId) {
+                const grupoDeFilamento = fetchedGruposDeFilamento.find(g => g.id === fil.grupoFilamentoId);
+                if (grupoDeFilamento && grupoDeFilamento.custoMedioPonderado > 0) {
+                  totalFilamentCost += Number(fil.quantidade || 0) * grupoDeFilamento.custoMedioPonderado;
+                } else {
+                  console.warn(`Grupo de filamento ${fil.grupoFilamentoId} não encontrado ou sem custo médio. O custo da peça pode estar incorreto.`);
+                }
+              }
+            }
+          }
+          if (grupo.outrosInsumos && Array.isArray(grupo.outrosInsumos)) {
+            for (const insumoItem of grupo.outrosInsumos) {
+              if (insumoItem.quantidade > 0 && insumoItem.insumoId) {
+                const insumoData = fetchedInsumos.find(i => i.id === insumoItem.insumoId);
+                if (insumoData && insumoData.custoPorUnidade > 0) {
+                  totalOtherInsumosCost += Number(insumoItem.quantidade || 0) * insumoData.custoPorUnidade;
+                } else {
+                  console.warn(`Insumo ${insumoItem.insumoId} não encontrado ou sem custo por unidade. O custo da peça pode estar incorreto.`);
+                }
+              }
+            }
+          }
+        }
+
+        const impressionCost = totalImpressionTime * Number(currentServiceCosts.custoPorMinutoImpressao || 0);
+        const assemblyCost = Number(peca.tempoMontagem || 0) * Number(currentServiceCosts.custoPorMinutoMontagem || 0);
+        
+        return {
+          ...peca,
+          custoCalculado: totalFilamentCost + impressionCost + assemblyCost + totalOtherInsumosCost
+        };
+      });
+
+      setPecas(pecasWithRecalculatedCosts);
       setInsumos(fetchedInsumos);
       setPartes(fetchedPartes);
       setModelos(fetchedModelos);
       setKits(fetchedKits);
 
       setAllProducts([
-        ...fetchedPecas,
+        ...pecasWithRecalculatedCosts, // Use recalculated pecas
         ...fetchedInsumos,
         ...fetchedPartes,
         ...fetchedModelos,
@@ -192,13 +240,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
 
       setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalProduto[]);
       setRecipientes(recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[]);
-      setGruposDeFilamento(gruposDeFilamentoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-
-      const serviceCostsRef = doc(db, 'settings', 'serviceCosts');
-      const serviceCostsSnap = await getDoc(serviceCostsRef);
-      if (serviceCostsSnap.exists()) {
-        setServiceCosts(serviceCostsSnap.data() as { custoPorMinutoImpressao: number; custoPorMinutoMontagem: number; custoPorGramaFilamento: number; });
-      }
+      // gruposDeFilamento is already set above
     } catch (error) {
       console.error("Error fetching data: ", error);
     }
@@ -223,7 +265,13 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
 
   const getLocalString = (posicoes: PosicaoEstoque[]) => {
     if (!posicoes || posicoes.length === 0) return 'N/A';
-    const uniqueLocations = Array.from(new Set(posicoes.map(pos => getLocalName(pos.recipienteId))));
+    const locationNames = posicoes.map(pos => {
+      if (pos.recipienteId) {
+        return getLocalName(pos.recipienteId);
+      }
+      return 'N/A';
+    });
+    const uniqueLocations = Array.from(new Set(locationNames));
     return uniqueLocations.join(', ');
   };
 
@@ -305,6 +353,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
 
       let totalFilamentCost = 0;
       let totalImpressionTime = 0;
+      let totalOtherInsumosCost = 0; // New variable for other insumos cost
       
       for (const grupo of pecaFinal.gruposImpressao) {
         totalImpressionTime += Number(grupo.tempoImpressao || 0);
@@ -320,12 +369,25 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
             }
           }
         }
+        // Calculate cost for other insumos
+        if (grupo.outrosInsumos && Array.isArray(grupo.outrosInsumos)) {
+          for (const insumoItem of grupo.outrosInsumos) {
+            if (insumoItem.quantidade > 0 && insumoItem.insumoId) {
+              const insumoData = insumos.find(i => i.id === insumoItem.insumoId);
+              if (insumoData && insumoData.custoPorUnidade > 0) {
+                totalOtherInsumosCost += Number(insumoItem.quantidade || 0) * insumoData.custoPorUnidade;
+              } else {
+                console.warn(`Insumo ${insumoItem.insumoId} não encontrado ou sem custo por unidade. O custo da peça pode estar incorreto.`);
+              }
+            }
+          }
+        }
       }
 
       const impressionCost = totalImpressionTime * Number(serviceCosts.custoPorMinutoImpressao || 0);
       const assemblyCost = Number(pecaFinal.tempoMontagem || 0) * Number(serviceCosts.custoPorMinutoMontagem || 0);
       
-      pecaFinal.custoCalculado = totalFilamentCost + impressionCost + assemblyCost;
+      pecaFinal.custoCalculado = totalFilamentCost + impressionCost + assemblyCost + totalOtherInsumosCost;
 
       if (pecaFinal.id) {
         await updatePeca(pecaFinal.id, pecaFinal);

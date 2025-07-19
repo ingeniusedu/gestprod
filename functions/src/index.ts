@@ -24,10 +24,10 @@ export const updateGrupoDeFilamento = onDocumentWritten("insumos/{insumoId}", as
       return;
     }
 
-    const grupoFilamentoId = insumo.grupoFilamentoId;
+    const grupoFilamentoId = insumo.especificacoes?.grupoFilamentoId;
     if (!grupoFilamentoId) {
       functions.logger.log(
-        `[updateGrupoDeFilamento] Insumo ${event.params.insumoId} does not have grupoFilamentoId. Exiting.`
+        `[updateGrupoDeFilamento] Insumo ${event.params.insumoId} does not have especificacoes.grupoFilamentoId. Exiting.`
       );
       return;
     }
@@ -37,7 +37,7 @@ export const updateGrupoDeFilamento = onDocumentWritten("insumos/{insumoId}", as
     // Get all spools in the same group
     const insumosRef = db.collection("insumos");
     const spoolsSnapshot = await insumosRef
-      .where("grupoFilamentoId", "==", grupoFilamentoId)
+      .where("especificacoes.grupoFilamentoId", "==", grupoFilamentoId)
       .get();
 
     if (spoolsSnapshot.empty) {

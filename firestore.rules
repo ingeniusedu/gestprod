@@ -50,5 +50,8 @@ service cloud.firestore {
     match /locaisInsumos/{document=**} {
       allow read, write: if request.auth != null;
     }
+    match /lancamentoServicos/{docId} {
+      allow write: if request.auth != null;
+    }
   }
 }

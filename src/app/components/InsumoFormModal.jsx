@@ -21,6 +21,54 @@ const initialCores = [
   'Transição', 'Verde', 'Verde macaron', 'Verde Menta', 'Verde neon', 'Verde Oliva', 'Vermelho', 'Vermelho escuro'
 ].sort();
 
+// Define default specifications for each insumo type
+const defaultFilamentSpecs = {
+  fabricante: '',
+  tipoFilamento: '',
+  material: '',
+  numeroSpools: 1,
+  tamanhoSpool: '1000',
+  valorPagoPorSpool: '',
+  spoolNumero: 0,
+  autoNumberSpool: true,
+  aberto: false,
+  dataAbertura: '',
+  pesoBruto: 0,
+  pesoLiquido: 0,
+  dataUltimaPesagem: '',
+  finalizadoEm: false,
+  dataFinalizacao: '',
+  lote: '',
+  dataFabricacao: '',
+  dataCompra: '',
+  operacoes: [],
+  consumoProducao: 0,
+  consumoReal: 0,
+};
+
+const defaultEmbalagemSpecs = {
+  tipoEmbalagem: '',
+  materialEmbalagem: '',
+  altura: 0,
+  largura: 0,
+  profundidade: 0,
+  valorTotalPago: 0,
+  valorFrete: 0,
+  dataCompraEmbalagem: '',
+};
+
+const defaultMaterialSpecs = {
+  tipoMaterial: '',
+  materialAssociado: '',
+  altura: 0,
+  largura: 0,
+  profundidade: 0,
+  valorTotalPago: 0,
+  valorFrete: 0,
+  dataCompraMaterial: '',
+  usarMedidas: true,
+};
+
 const initialFormState = {
   nome: '',
   tipo: 'filamento', // Default type
@@ -29,53 +77,7 @@ const initialFormState = {
   cor: '',
   estoqueAtual: 0, // For non-filament types
   estoqueMinimo: 0, // For non-filament types
-  especificacoes: {
-    // Filament specific
-    fabricante: '',
-    tipoFilamento: '',
-    material: '',
-    numeroSpools: 1,
-    tamanhoSpool: '1000',
-    valorPagoPorSpool: '',
-    spoolNumero: 0, // Change to number
-    autoNumberSpool: true,
-    aberto: false,
-    dataAbertura: '',
-    pesoBruto: 0, // New field for gross weight
-    pesoLiquido: 0, // New field for net weight
-    dataUltimaPesagem: '', // New field for last weighing date
-    finalizadoEm: false,
-    dataFinalizacao: '',
-    lote: '', // New field
-    dataFabricacao: '', // New field
-    dataCompra: '', // New field
-    operacoes: [], // New field for operation IDs
-    consumoProducao: 0, // New field for estimated production consumption
-    consumoReal: 0, // New field for real consumption (by weighing)
-
-    // Embalagem specific (these fields will only be used if tipo is 'embalagem')
-    tipoEmbalagem: '',
-    materialEmbalagem: '',
-    altura: 0,
-    largura: 0,
-    profundidade: 0,
-    quantidade: 0,
-    valorTotalPago: 0, // Field for total paid value
-    valorFrete: 0, // Field for freight value
-    dataCompraEmbalagem: '',
-
-    // Material specific
-    tipoMaterial: '',
-    materialAssociado: '',
-    usarMedidas: true, // New field for material to indicate if dimensions are used
-    altura: 0, // Added for material
-    largura: 0, // Added for material
-    profundidade: 0, // Added for material
-    quantidade: 0, // Added for material
-    valorTotalPago: 0, // Added for material
-    valorFrete: 0, // Added for material
-    dataCompraMaterial: '', // Changed from dataCompraEmbalagem
-  },
+  especificacoes: { ...defaultFilamentSpecs }, // Use default filament specs initially
 };
 
 export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, highestExistingSpoolNumber }) {
@@ -218,102 +220,32 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       };
 
       if (name === 'tipo') {
-        if (value === 'filamento') {
-          newState.unidade = 'gramas';
-          newState.estoqueAtual = 0; // Reset estoqueAtual for filaments
-          newState.estoqueMinimo = 0; // Reset estoqueMinimo for filaments
-          newState.especificacoes = {
-            fabricante: '',
-            tipoFilamento: '',
-            material: '',
-            numeroSpools: 1,
-            tamanhoSpool: '1000',
-            valorPagoPorSpool: '',
-            spoolNumero: 0, // Change to number
-            autoNumberSpool: true,
-            aberto: false,
-            dataAbertura: '',
-            pesoBruto: 0,
-            pesoLiquido: 0,
-            dataUltimaPesagem: '',
-            finalizadoEm: false,
-            dataFinalizacao: '',
-            lote: '',
-            dataFabricacao: '',
-            dataCompra: '',
-            operacoes: [],
-            consumoProducao: 0,
-            consumoReal: 0,
-          };
-        } else if (value === 'embalagem') {
-          newState.unidade = 'unidades';
-          if (!initialData) { // Only reset for new insumos
+        // Reset specificacoes based on the new type
+        switch (value) {
+          case 'filamento':
+            newState.unidade = 'gramas';
+            newState.estoqueAtual = 0; // Reset estoqueAtual for filaments
+            newState.estoqueMinimo = 0; // Reset estoqueMinimo for filaments
+            newState.especificacoes = { ...defaultFilamentSpecs };
+            break;
+          case 'embalagem':
+            newState.unidade = 'unidades';
             newState.estoqueAtual = 0;
             newState.estoqueMinimo = 0;
-            newState.especificacoes = {
-              tipoEmbalagem: '',
-              materialEmbalagem: '',
-              altura: 0,
-              largura: 0,
-              profundidade: 0,
-              // quantidade: 0, // Removed as it will be derived from posicoesEstoque
-              valorTotalPago: 0,
-              valorFrete: 0,
-              dataCompraEmbalagem: '',
-            };
-          } else { // When editing, preserve existing embalagem specific data
-            newState.especificacoes = {
-              ...prev.especificacoes, // Keep existing specificacoes
-              tipoEmbalagem: prev.especificacoes.tipoEmbalagem || '',
-              materialEmbalagem: prev.especificacoes.materialEmbalagem || '',
-              altura: prev.especificacoes.altura || 0,
-              largura: prev.especificacoes.largura || 0,
-              profundidade: prev.especificacoes.profundidade || 0,
-              // quantidade: prev.especificacoes.quantidade || 0, // Removed
-              valorTotalPago: prev.especificacoes.valorTotalPago || 0,
-              valorFrete: prev.especificacoes.valorFrete || 0,
-              dataCompraEmbalagem: prev.especificacoes.dataCompraEmbalagem || '',
-            };
-          }
-        } else if (value === 'material') {
-          newState.unidade = ''; // Will be set by user
-          if (!initialData) {
+            newState.especificacoes = { ...defaultEmbalagemSpecs };
+            break;
+          case 'material':
+            newState.unidade = ''; // Will be set by user
             newState.estoqueAtual = 0;
             newState.estoqueMinimo = 0;
-            newState.especificacoes = {
-              tipoMaterial: '',
-              materialAssociado: '',
-              altura: 0,
-              largura: 0,
-              profundidade: 0,
-              // quantidade: 0, // Removed
-              valorTotalPago: 0,
-              valorFrete: 0,
-              dataCompraMaterial: '',
-              usarMedidas: true, // Ensure usarMedidas is set for new material insumos
-            };
-          } else {
-            newState.especificacoes = {
-              ...prev.especificacoes,
-              tipoMaterial: prev.especificacoes.tipoMaterial || '',
-              materialAssociado: prev.especificacoes.materialAssociado || '',
-              altura: prev.especificacoes.altura || 0,
-              largura: prev.especificacoes.largura || 0,
-              profundidade: prev.especificacoes.profundidade || 0,
-              // quantidade: prev.especificacoes.quantidade || 0, // Removed
-              valorTotalPago: prev.especificacoes.valorTotalPago || 0,
-              valorFrete: prev.especificacoes.valorFrete || 0,
-              dataCompraMaterial: prev.especificacoes.dataCompraMaterial || '',
-              usarMedidas: prev.especificacoes.usarMedidas ?? true, // Preserve existing or default to true
-            };
-          }
-        } else { // For 'tempo', 'outros'
-          newState.especificacoes = {};
-          newState.unidade = '';
-          if (!initialData) { // Only reset for new insumos
+            newState.especificacoes = { ...defaultMaterialSpecs };
+            break;
+          default: // For 'tempo', 'outros'
+            newState.especificacoes = {}; // Ensure it's empty
+            newState.unidade = '';
             newState.estoqueAtual = 0;
             newState.estoqueMinimo = 0;
-          }
+            break;
         }
         // Clear nome when changing type, it will be regenerated by useEffect
         newState.nome = '';
@@ -553,15 +485,131 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       }
 
       if (dataToSave.tipo === 'filamento') {
-        // ... (lógica de filamento existente)
+        // Generate the insumo (spool) name
+        const insumoName = [
+          dataToSave.especificacoes.fabricante,
+          dataToSave.especificacoes.material,
+          dataToSave.especificacoes.tipoFilamento,
+          dataToSave.cor
+        ].filter(Boolean).join(' ').trim();
+        dataToSave.nome = insumoName;
+
+        // Generate the grupoDeFilamento name (excluding tipoFilamento)
+        const grupoDeFilamentoName = [
+          dataToSave.especificacoes.fabricante,
+          dataToSave.especificacoes.material,
+          dataToSave.cor
+        ].filter(Boolean).join(' ').trim();
+
+        try {
+          await runTransaction(db, async (transaction) => {
+            const insumosRef = collection(db, 'insumos');
+            const gruposDeFilamentoRef = collection(db, 'gruposDeFilamento');
+            let insumoDocRef;
+            let insumoId;
+            let grupoFilamentoId;
+
+            if (initialData?.id) {
+              // Editing existing insumo
+              insumoDocRef = doc(insumosRef, initialData.id);
+              insumoId = initialData.id;
+              // Preserve existing grupoFilamentoId
+              grupoFilamentoId = initialData.especificacoes?.grupoFilamentoId;
+              dataToSave.especificacoes.grupoFilamentoId = grupoFilamentoId;
+              transaction.update(insumoDocRef, dataToSave);
+            } else {
+              // Creating new insumo
+              // Check if a GrupoDeFilamento with the same name already exists
+              const q = query(gruposDeFilamentoRef, where('nome', '==', grupoDeFilamentoName));
+              const querySnapshot = await getDocs(q);
+
+              if (!querySnapshot.empty) {
+                // Use existing GrupoDeFilamento
+                grupoFilamentoId = querySnapshot.docs[0].id;
+              } else {
+                // Create a new GrupoDeFilamento
+                const newGrupoDocRef = doc(gruposDeFilamentoRef);
+                grupoFilamentoId = newGrupoDocRef.id;
+                transaction.set(newGrupoDocRef, {
+                  id: grupoFilamentoId,
+                  nome: grupoDeFilamentoName,
+                  fabricante: dataToSave.especificacoes.fabricante,
+                  material: dataToSave.especificacoes.material,
+                  cor: dataToSave.cor,
+                  custoMedioPonderado: 0, // Will be updated by Cloud Function
+                  estoqueTotalGramas: 0, // Will be updated by Cloud Function
+                  spoolsEmEstoqueIds: [], // Will be updated by Cloud Function
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              }
+
+              // Assign the determined grupoFilamentoId to the new insumo
+              dataToSave.especificacoes.grupoFilamentoId = grupoFilamentoId;
+
+              insumoDocRef = doc(insumosRef);
+              insumoId = insumoDocRef.id;
+              transaction.set(insumoDocRef, {
+                ...dataToSave,
+                id: insumoId,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            onSave({ ...dataToSave, id: insumoId });
+          });
+        } catch (error) {
+          console.error("Error saving insumo:", error);
+          setErrors(prev => ({ ...prev, submit: `Erro ao salvar: ${error.message}` }));
+        }
       } else {
         // Para não-filamentos, o estoque será gerenciado pelas posições de estoque
         dataToSave.estoqueAtual = totalPosicoes; // Update estoqueAtual based on sum of posicoesEstoque
         dataToSave.posicoesEstoque = posicoesEstoque; // Save the positions directly
         // dataToSave.especificacoes.quantidade = totalPosicoes; // Removed as per user request
-      }
 
       // Clean the object to remove any undefined values before sending to Firebase
+      // Conditionally clean specificacoes based on insumo type
+      if (dataToSave.especificacoes) {
+        if (dataToSave.tipo === 'filamento') {
+          const {
+            fabricante, tipoFilamento, material, numeroSpools, tamanhoSpool,
+            valorPagoPorSpool, spoolNumero, autoNumberSpool, aberto, dataAbertura,
+            pesoBruto, pesoLiquido, dataUltimaPesagem, finalizadoEm, dataFinalizacao,
+            lote, dataFabricacao, dataCompra, operacoes, consumoProducao, consumoReal,
+            grupoFilamentoId // Keep this as it's set in the filament logic
+          } = dataToSave.especificacoes;
+          dataToSave.especificacoes = cleanObject({
+            fabricante, tipoFilamento, material, numeroSpools, tamanhoSpool,
+            valorPagoPorSpool, spoolNumero, autoNumberSpool, aberto, dataAbertura,
+            pesoBruto, pesoLiquido, dataUltimaPesagem, finalizadoEm, dataFinalizacao,
+            lote, dataFabricacao, dataCompra, operacoes, consumoProducao, consumoReal,
+            grupoFilamentoId
+          });
+        } else if (dataToSave.tipo === 'embalagem') {
+          const {
+            tipoEmbalagem, materialEmbalagem, altura, largura, profundidade,
+            valorTotalPago, valorFrete, dataCompraEmbalagem
+          } = dataToSave.especificacoes;
+          dataToSave.especificacoes = cleanObject({
+            tipoEmbalagem, materialEmbalagem, altura, largura, profundidade,
+            valorTotalPago, valorFrete, dataCompraEmbalagem
+          });
+        } else if (dataToSave.tipo === 'material') {
+          const {
+            tipoMaterial, materialAssociado, usarMedidas, altura, largura, profundidade,
+            valorTotalPago, valorFrete, dataCompraMaterial
+          } = dataToSave.especificacoes;
+          dataToSave.especificacoes = cleanObject({
+            tipoMaterial, materialAssociado, usarMedidas, altura, largura, profundidade,
+            valorTotalPago, valorFrete, dataCompraMaterial
+          });
+        } else {
+          // For 'tempo' and 'outros' types, clear all specificacoes
+          dataToSave.especificacoes = {};
+        }
+      }
+
       dataToSave = cleanObject(dataToSave);
 
       try {
@@ -570,48 +618,49 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
           let insumoDocRef;
           let insumoId;
 
-          if (initialData?.id) {
-            insumoDocRef = doc(insumosRef, initialData.id);
-            transaction.update(insumoDocRef, dataToSave);
-            insumoId = initialData.id;
-          } else {
-            insumoDocRef = doc(insumosRef);
-            insumoId = insumoDocRef.id;
-            transaction.set(insumoDocRef, {
-              ...dataToSave,
-              id: insumoId,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-
-            if (dataToSave.estoqueAtual > 0 && dataToSave.tipo !== 'filamento') {
-              const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
-              // Ensure only required fields are passed for 'locais' array and clean them
-              const cleanedPosicoesEstoque = posicoesEstoque.map(pos => cleanObject({
-                recipienteId: pos.recipienteId,
-                divisao: pos.divisao,
-                quantidade: pos.quantidade,
-                localId: pos.localId,
-              }));
-              transaction.set(lancamentoInsumoRef, {
-                id: lancamentoInsumoRef.id,
-                insumoId: insumoId,
-                tipoInsumo: dataToSave.tipo,
-                tipoMovimento: 'entrada',
-                quantidade: dataToSave.estoqueAtual, // Use estoqueAtual directly
-                unidadeMedida: dataToSave.unidade,
-                dataLancamento: serverTimestamp(),
-                origem: 'cadastro_inicial',
-                detalhes: `Estoque inicial de ${dataToSave.nome}`,
-                locais: cleanedPosicoesEstoque,
+            if (initialData?.id) {
+              insumoDocRef = doc(insumosRef, initialData.id);
+              transaction.update(insumoDocRef, dataToSave);
+              insumoId = initialData.id;
+            } else {
+              insumoDocRef = doc(insumosRef);
+              insumoId = insumoDocRef.id;
+              transaction.set(insumoDocRef, {
+                ...dataToSave,
+                id: insumoId,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
               });
+
+              if (dataToSave.estoqueAtual > 0 && dataToSave.tipo !== 'filamento') {
+                const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
+                // Ensure only required fields are passed for 'locais' array and clean them
+                const cleanedPosicoesEstoque = posicoesEstoque.map(pos => cleanObject({
+                  recipienteId: pos.recipienteId,
+                  divisao: pos.divisao,
+                  quantidade: pos.quantidade,
+                  localId: pos.localId,
+                }));
+                transaction.set(lancamentoInsumoRef, {
+                  id: lancamentoInsumoRef.id,
+                  insumoId: insumoId,
+                  tipoInsumo: dataToSave.tipo,
+                  tipoMovimento: 'entrada',
+                  quantidade: dataToSave.estoqueAtual, // Use estoqueAtual directly
+                  unidadeMedida: dataToSave.unidade,
+                  dataLancamento: serverTimestamp(),
+                  origem: 'cadastro_inicial',
+                  detalhes: `Estoque inicial de ${dataToSave.nome}`,
+                  locais: cleanedPosicoesEstoque,
+                });
+              }
             }
-          }
-          onSave({ ...dataToSave, id: insumoId });
-        });
-      } catch (error) {
-        console.error("Error saving insumo:", error);
-        setErrors(prev => ({ ...prev, submit: `Erro ao salvar: ${error.message}` }));
+            onSave({ ...dataToSave, id: insumoId });
+          });
+        } catch (error) {
+          console.error("Error saving insumo:", error);
+          setErrors(prev => ({ ...prev, submit: `Erro ao salvar: ${error.message}` }));
+        }
       }
     }
   };

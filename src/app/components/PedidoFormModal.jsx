@@ -237,7 +237,7 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
         setPedido((prevPedido) => ({
           ...prevPedido,
           produtos: [...prevPedido.produtos, {
-            produtoId: productSnapshot.id, // FIX: Map 'id' to 'produtoId'
+            produtoId: productSnapshot.id,
             tipo: productSnapshot.tipo,
             nome: productSnapshot.nome,
             SKU: productSnapshot.SKU,
@@ -311,7 +311,55 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSave(pedido);
+
+    const itensProducao = [];
+    const pecasMap = new Map();
+
+    // Função para processar peças de um produto
+    const processarPecas = (produto) => {
+      if (produto.tipo === 'peca') {
+        const pecaId = produto.produtoId;
+        const quantidade = produto.quantidade;
+        if (pecasMap.has(pecaId)) {
+          pecasMap.set(pecaId, pecasMap.get(pecaId) + quantidade);
+        } else {
+          pecasMap.set(pecaId, quantidade);
+        }
+      } else if (produto.pecasComponentes) {
+        produto.pecasComponentes.forEach(pecaComponente => {
+          const pecaId = pecaComponente.id;
+          const quantidade = pecaComponente.quantidade * produto.quantidade;
+          if (pecasMap.has(pecaId)) {
+            pecasMap.set(pecaId, pecasMap.get(pecaId) + quantidade);
+          } else {
+            pecasMap.set(pecaId, quantidade);
+          }
+        });
+      }
+    };
+
+    pedido.produtos.forEach(processarPecas);
+
+    pecasMap.forEach((quantidade, pecaId) => {
+      itensProducao.push({
+        id: `${pecaId}-${Date.now()}`, // Simple unique ID
+        refId: pecaId,
+        tipo: 'peca',
+        status: 'aguardando',
+        quantidade: quantidade,
+        partesDisponiveis: [],
+        pecasDisponiveis: [],
+      });
+    });
+
+    const pedidoParaSalvar = {
+      ...pedido,
+      itensProducao: itensProducao,
+      produtos: pedido.produtos.map(({ produtoId, tipo, quantidade }) => ({ produtoId, tipo, quantidade })), // Salvar apenas o necessário
+    };
+    delete pedidoParaSalvar.etapasProducao; // Remover campo obsoleto
+
+    onSave(pedidoParaSalvar);
     onClose();
   };
 

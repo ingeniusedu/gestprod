@@ -2,34 +2,73 @@
 
 import React, { useState, useEffect } from 'react';
 import { db, auth } from '../services/firebase'; // Import auth
-import { collection, getDocs, doc, getDoc, updateDoc, query, where, deleteField, Timestamp, addDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, updateDoc, query, where, Timestamp, addDoc, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth'; // Import onAuthStateChanged
-import { Hourglass, Package, CheckCircle, XCircle, Play, Pause, FastForward, Trash2, Spool, MapPin } from 'lucide-react';
-import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto } from '../types';
+import { Hourglass, Package, CheckCircle, XCircle, Play, Pause, Spool, MapPin, Users, PlusCircle } from 'lucide-react';
+import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto, ItemProducao, PecaParte, ProductionGroupFilamento, ProductionGroupOutroInsumo } from '../types';
 import { LocalProduto, LocalInsumo, Recipiente } from '../types/mapaEstoque';
 import { v4 as uuidv4 } from 'uuid';
 import ProductionLaunchModal from '../components/ProductionLaunchModal';
-import StockSelectionModal from '../components/StockSelectionModal'; // NEW IMPORT
+import StockSelectionModal from '../components/StockSelectionModal';
+import ProductionExcessStockModal from '../components/ProductionExcessStockModal'; // Import new modal
+import InsumoSelectionModal from '../components/InsumoSelectionModal';
 import { cleanObject } from '../utils/cleanObject';
 
 export default function Producao() {
+  interface OptimizedFilamentItem extends ProductionGroupFilamento {
+    aggregatedId: string;
+    quantidadeNecessaria?: number;
+    estoqueAtual?: number;
+  }
+
+  interface OptimizedInsumoItem extends ProductionGroupOutroInsumo {
+    aggregatedId: string;
+    quantidadeNecessaria?: number;
+    estoqueAtual?: number;
+  }
+
+  interface OptimizedGroup {
+    id: string;
+    partesNoGrupo: { [key: string]: { nome: string; quantidade: number; estoqueAtual?: number; quantidadeNecessaria?: number; } };
+    totalPartsQuantity: number; // Renamed from quantidadeTotal
+    aggregatedGroupCount: number; // New field to track number of aggregated production groups
+    pedidosOrigem: { pedidoId: string; pedidoNumero: string; groupId: string }[];
+    sourceName: string;
+    tempoImpressaoGrupo: number;
+    corFilamento?: string;
+    filamentosNecessarios: OptimizedFilamentItem[];
+    outrosInsumosNecessarios: OptimizedInsumoItem[];
+    items: (PecaParte & { estoqueAtual?: number })[];
+    insumosProntos: boolean;
+    partesProntas: boolean;
+  }
+
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
-  const [activeTab, setActiveTab] = useState<'aguardando' | 'em_producao' | 'em_montagem' | 'montados'>('aguardando');
+  const [optimizedGroups, setOptimizedGroups] = useState<Map<string, OptimizedGroup>>(new Map());
+  const [activeTab, setActiveTab] = useState<'aguardando' | 'em_producao' | 'em_montagem_peca' | 'em_montagem_modelo' | 'processando_embalagem' | 'finalizados'>('aguardando');
   const [filamentColors, setFilamentColors] = useState<Record<string, string>>({});
   const [displayGroups, setDisplayGroups] = useState<ProductionGroup[]>([]);
+  const [currentAguardandoGroups, setCurrentAguardandoGroups] = useState<ProductionGroup[]>([]); // New state for aguardando groups
   const [allInsumos, setAllInsumos] = useState<Insumo[]>([]);
-  const [availablePecas, setAvailablePecas] = useState<Peca[]>([]); // Renamed from availableParts
-  const [availablePartes, setAvailablePartes] = useState<Parte[]>([]); // New state for Parte[]
+  const [availablePecas, setAvailablePecas] = useState<Peca[]>([]);
+  const [availablePartes, setAvailablePartes] = useState<Parte[]>([]);
   const [availableModels, setAvailableModels] = useState<Modelo[]>([]);
   const [availableKits, setAvailableKits] = useState<Kit[]>([]);
   const [availableFilamentGroups, setAvailableFilamentGroups] = useState<GrupoDeFilamento[]>([]);
-  const [locaisProdutos, setLocaisProdutos] = useState<LocalProduto[]>([]); // New state for product stock locations
-  const [locaisInsumos, setLocaisInsumos] = useState<LocalInsumo[]>([]); // New state for insumo stock locations
-  const [recipientes, setRecipientes] = useState<Recipiente[]>([]); // New state for recipients
+  const [locaisProdutos, setLocaisProdutos] = useState<LocalProduto[]>([]);
+  const [locaisInsumos, setLocaisInsumos] = useState<LocalInsumo[]>([]);
+  const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
 
   const [isLaunchModalOpen, setIsLaunchModalOpen] = useState(false);
   const [selectedProductionGroup, setSelectedProductionGroup] = useState<ProductionGroup | null>(null);
   const [isStockSelectionModalOpen, setIsStockSelectionModalOpen] = useState(false);
+  const [isExcessModalOpen, setIsExcessModalOpen] = useState(false);
+  const [excessPartData, setExcessPartData] = useState<{ id: string; nome: string; sku: string; quantidade: number; pecaTipo: Peca['tipoPeca'], itemProducaoId: string } | null>(null);
+  const [isPackagingInsumoModalOpen, setIsPackagingInsumoModalOpen] = useState(false);
+  const [selectedPedidoForPackaging, setSelectedPedidoForPackaging] = useState<Pedido | null>(null);
+  const [packagingTime, setPackagingTime] = useState<Record<string, number>>({});
+  const [selectedPackagingInsumos, setSelectedPackagingInsumos] = useState<Record<string, { insumo: Insumo, quantidade: number }[]>>({});
+
   interface ItemToDebit {
     id: string;
     nome: string;
@@ -44,7 +83,7 @@ export default function Producao() {
     debitType: 'full' | 'available';
   }
   const [itemToDebit, setItemToDebit] = useState<ItemToDebitState | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false); // New state for authentication status
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -66,15 +105,21 @@ export default function Producao() {
         initializeData();
       } else {
         setIsAuthenticated(false);
-        setPedidos([]); // Clear data if not authenticated
+        setPedidos([]);
         setDisplayGroups([]);
       }
     });
 
-    return () => unsubscribe(); // Cleanup subscription on unmount
+    return () => unsubscribe();
   }, []);
 
-  // New useEffect to derive displayGroups from pedidos
+  // New useEffect to re-fetch data when 'aguardando' tab is selected
+  useEffect(() => {
+    if (activeTab === 'aguardando' && isAuthenticated) {
+      refetchAllData();
+    }
+  }, [activeTab, isAuthenticated]);
+
   useEffect(() => {
     const allGroups: ProductionGroup[] = [];
     pedidos.forEach(pedido => {
@@ -83,17 +128,463 @@ export default function Producao() {
       }
     });
     const sortedGroups = allGroups.sort((a, b) => {
-      // Sort by pedidoNumero and then by sourceName for consistent display
       if (a.pedidoNumero !== b.pedidoNumero) {
         return a.pedidoNumero.localeCompare(b.pedidoNumero);
       }
       return a.sourceName.localeCompare(b.sourceName);
     });
     setDisplayGroups(sortedGroups);
-  }, [pedidos]); // Dependency on pedidos
+  }, [pedidos]);
+
+  useEffect(() => {
+    const optimizeGroups = () => {
+      console.log("optimizeGroups started.");
+      console.log("allFilamentGroupsData at optimizeGroups start:", availableFilamentGroups);
+      console.log("allInsumosData at optimizeGroups start:", allInsumos);
+      const productionGroupsAguardando: ProductionGroup[] = [];
+
+      // Generate ProductionGroups from raw pedido.produtos for 'aguardando' tab
+      for (const pedido of pedidos) {
+        // If pedido has no productionGroups or its status is 'aguardando', generate them from products
+        if (pedido.status === 'aguardando' && (!pedido.productionGroups || pedido.productionGroups.length === 0)) {
+          const createCanonicalKey = (grupo: GrupoImpressao): string => {
+            const parteIds = [...(grupo.partes || [])].map(p => p.parteId).sort().join(',');
+            const filamentoGroupIds = [...(grupo.filamentos || [])]
+              .map(f => f.grupoFilamentoId)
+              .filter(Boolean)
+              .sort()
+              .join(',');
+            return `partes:[${parteIds}]-filamentos:[${filamentoGroupIds}]`;
+          };
+
+          const allPrintGroupsNeeded: {
+            grupo: GrupoImpressao,
+            totalQuantity: number,
+            sourceName: string,
+            sourceType: 'peca' | 'modelo' | 'kit',
+            originalPecaId?: string,
+            originalModeloId?: string,
+            originalKitId?: string,
+          }[] = [];
+
+          for (const produtoPedido of pedido.produtos) {
+            if (produtoPedido.tipo === 'peca') {
+              const pecaDetails = availablePecas.find(p => p.id === produtoPedido.produtoId);
+              if (pecaDetails?.gruposImpressao) {
+                pecaDetails.gruposImpressao.forEach(gi => {
+                  allPrintGroupsNeeded.push({
+                    grupo: gi,
+                    totalQuantity: produtoPedido.quantidade,
+                    sourceName: pecaDetails.nome,
+                    sourceType: 'peca',
+                    originalPecaId: pecaDetails.id,
+                  });
+                });
+              }
+            } else if (produtoPedido.tipo === 'modelo') {
+              const modeloDetails = availableModels.find(m => m.id === produtoPedido.produtoId);
+              if (modeloDetails?.pecas) {
+                for (const pecaRef of modeloDetails.pecas) {
+                  const pecaDetails = availablePecas.find(p => p.id === pecaRef.pecaId);
+                  if (pecaDetails?.gruposImpressao) {
+                    pecaDetails.gruposImpressao.forEach(gi => {
+                      allPrintGroupsNeeded.push({
+                        grupo: gi,
+                        totalQuantity: produtoPedido.quantidade * pecaRef.quantidade,
+                        sourceName: modeloDetails.nome,
+                        sourceType: 'modelo',
+                        originalModeloId: modeloDetails.id,
+                        originalPecaId: pecaDetails.id,
+                      });
+                    });
+                  }
+                }
+              }
+            } else if (produtoPedido.tipo === 'kit') {
+              const kitDetails = availableKits.find(k => k.id === produtoPedido.produtoId);
+              if (kitDetails?.modelos) {
+                for (const modeloRef of kitDetails.modelos) {
+                  const modeloDetails = availableModels.find(m => m.id === modeloRef.modeloId);
+                  if (modeloDetails?.pecas) {
+                    for (const pecaRef of modeloDetails.pecas) {
+                      const pecaDetails = availablePecas.find(p => p.id === pecaRef.pecaId);
+                      if (pecaDetails?.gruposImpressao) {
+                        pecaDetails.gruposImpressao.forEach(gi => {
+                          allPrintGroupsNeeded.push({
+                            grupo: gi,
+                            totalQuantity: produtoPedido.quantidade * modeloRef.quantidade * pecaRef.quantidade,
+                            sourceName: kitDetails.nome,
+                            sourceType: 'kit',
+                            originalKitId: kitDetails.id,
+                            originalModeloId: modeloDetails?.id,
+                            originalPecaId: pecaDetails.id,
+                          });
+                        });
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          const aggregatedGroups: Record<string, {
+            originalGroup: GrupoImpressao;
+            totalQuantity: number;
+            sources: { name: string, type: 'peca' | 'modelo' | 'kit' }[];
+          }> = {};
+
+          for (const { grupo, totalQuantity, sourceName, sourceType } of allPrintGroupsNeeded) {
+            const key = createCanonicalKey(grupo);
+            if (!aggregatedGroups[key]) {
+              aggregatedGroups[key] = {
+                originalGroup: grupo,
+                totalQuantity: 0,
+                sources: [],
+              };
+            }
+            aggregatedGroups[key].totalQuantity += totalQuantity;
+            if (!aggregatedGroups[key].sources.some(s => s.name === sourceName && s.type === sourceType)) {
+              aggregatedGroups[key].sources.push({ name: sourceName, type: sourceType });
+            }
+          }
+
+          for (const key in aggregatedGroups) {
+            const { originalGroup, totalQuantity, sources } = aggregatedGroups[key];
+            const limit = originalGroup.quantidadeMaxima || 1;
+            
+            let groupHasAssembly = false;
+            let originalPecaId: string | undefined;
+            let originalModeloId: string | undefined;
+            let originalKitId: string | undefined;
+
+            for (const source of sources) {
+                if (source.type === 'peca') {
+                    const peca = availablePecas.find(p => p.nome === source.name);
+                    if (peca) {
+                        originalPecaId = peca.id;
+                        if (peca.tempoMontagem && peca.tempoMontagem > 0) {
+                            groupHasAssembly = true;
+                            
+                        }
+                    }
+                } else if (source.type === 'modelo') {
+                    const modelo = availableModels.find(m => m.id === source.name);
+                    if (modelo) {
+                        originalModeloId = modelo.id;
+                        if (modelo.tempoMontagem && modelo.tempoMontagem > 0) {
+                            groupHasAssembly = true;
+                            
+                        }
+                    }
+                } else if (source.type === 'kit') {
+                    const kit = availableKits.find(k => k.nome === source.name);
+                    if (kit) {
+                        originalKitId = kit.id;
+                        if (kit.tempoMontagem && kit.tempoMontagem > 0) {
+                            groupHasAssembly = true;
+                            
+                        }
+                    }
+                }
+            }
+
+            let remainingQuantity = totalQuantity;
+            
+            while (remainingQuantity > 0) {
+              const quantityForThisRun = Math.min(remainingQuantity, limit);
+              
+              const productionGroup: ProductionGroup = {
+                id: uuidv4(),
+                sourceId: sources.map(s => s.name).join(', '),
+                sourceType: sources.length > 1 ? 'kit' : sources[0].type,
+                sourceName: originalGroup.nome,
+                originalPecaId: originalPecaId,
+                originalModeloId: originalModeloId,
+                originalKitId: originalKitId,
+                corFilamento: availableFilamentGroups.find(fg => fg.id === originalGroup.filamentos[0]?.grupoFilamentoId)?.cor || 'N/A',
+                items: originalGroup.partes.map(parte => {
+                  const parteDetails = availablePartes.find(p => p.id === parte.parteId);
+                  return {
+                    id: parte.parteId,
+                    nome: parteDetails?.nome || 'N/A',
+                    quantidadePedido: parte.quantidade * quantityForThisRun,
+                    hasAssembly: groupHasAssembly,
+                    tipoProduto: 'parte',
+                  };
+                }),
+                filamentosNecessarios: originalGroup.filamentos
+                  .filter(filamento => filamento.tipo === 'filamento' && filamento.grupoFilamentoId) // Ensure grupoFilamentoId exists for filaments
+                  .map(filamento => {
+                    let filamentName = 'Filamento Desconhecido';
+                    let filamentId = filamento.grupoFilamentoId!; // Always use grupoFilamentoId for filaments
+                    let currentEstoque = 0;
+                    let currentLocalEstoque: PosicaoEstoque[] = [];
+
+                    const filamentGroup = availableFilamentGroups.find(fg => fg.id === filamentId);
+                    if (filamentGroup) {
+                      filamentName = filamentGroup.nome;
+                      const { estoqueTotal, posicoesEstoque } = getStockForProduct(filamentGroup.id, 'insumo', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+                      currentEstoque = estoqueTotal;
+                      currentLocalEstoque = posicoesEstoque;
+                    } else {
+                      filamentName = `Filamento desconhecido (ID: ${filamentId})`;
+                    }
+
+                    return {
+                      id: filamentId,
+                      nome: filamentName,
+                      quantidade: filamento.quantidade * quantityForThisRun,
+                      tipo: filamento.tipo,
+                      estoqueAtualFilamento: currentEstoque,
+                      localEstoqueFilamento: currentLocalEstoque,
+                    };
+                  }),
+                outrosInsumosNecessarios: (originalGroup.outrosInsumos || [])
+                  .filter(insumo => insumo.insumoId)
+                  .map(insumo => {
+                    let insumoName = 'Insumo Desconhecido';
+                    let currentEstoque = 0;
+                    let currentLocalEstoque: PosicaoEstoque[] = [];
+
+                    const foundInsumo = allInsumos.find(i => i.id === insumo.insumoId);
+                    if (foundInsumo) {
+                      insumoName = foundInsumo.nome;
+                      const { estoqueTotal, posicoesEstoque } = getStockForProduct(foundInsumo.id, 'insumo', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+                      currentEstoque = estoqueTotal;
+                      currentLocalEstoque = posicoesEstoque;
+                    } else {
+                      insumoName = `Insumo desconhecido (ID: ${insumo.insumoId})`;
+                    }
+
+                    return {
+                      id: insumo.insumoId!,
+                      nome: insumoName,
+                      quantidade: insumo.quantidade * quantityForThisRun,
+                      tipo: insumo.tipo,
+                      etapaInstalacao: insumo.etapaInstalacao,
+                      estoqueAtualInsumo: currentEstoque,
+                      localEstoqueInsumo: currentLocalEstoque,
+                    };
+                  }),
+                tempoImpressaoGrupo: originalGroup.tempoImpressao * quantityForThisRun,
+                consumoFilamentoGrupo: originalGroup.filamentos
+                  .filter(f => f.tipo === 'filamento')
+                  .reduce((acc, f) => acc + f.quantidade, 0) * quantityForThisRun,
+                status: 'aguardando',
+                pedidoId: pedido.id,
+                pedidoNumero: String(pedido.numero || 'N/A'),
+                pedidoComprador: pedido.comprador,
+                pedidoTotalTempoImpressao: 0,
+                pedidoTotalConsumoFilamento: 0,
+                pedidoTotalTempoMontagem: 0,
+                quantidadeMaxima: originalGroup.quantidadeMaxima, // Pass quantidadeMaxima to ProductionGroup
+              };
+              productionGroupsAguardando.push(productionGroup);
+              remainingQuantity -= quantityForThisRun;
+            }
+          }
+        } else if (pedido.productionGroups) {
+          // If productionGroups already exist, add them to the list for optimization if they are 'aguardando'
+          productionGroupsAguardando.push(...pedido.productionGroups.filter(g => g.status === 'aguardando').map(g => ({ ...g, pedidoId: pedido.id, pedidoNumero: pedido.numero })));
+        }
+      }
+
+      const finalOptimizedGroups: OptimizedGroup[] = [];
+      const currentAggregatingGroups = new Map<string, OptimizedGroup[]>(); // Key: sourceName-corFilamento-quantidadeMaxima, Value: list of OptimizedGroups
+
+      for (const group of productionGroupsAguardando) {
+        const limit = group.quantidadeMaxima || Infinity;
+        const groupQuantity = group.items.reduce((acc, item) => acc + item.quantidadePedido, 0);
+        const aggregationKey = `${group.sourceName}-${group.corFilamento}-${limit}`;
+
+        let foundExistingOptimizedGroup = false;
+        if (currentAggregatingGroups.has(aggregationKey)) {
+          const potentialGroups = currentAggregatingGroups.get(aggregationKey)!;
+          for (const optimizedGroup of potentialGroups) {
+            // Check if adding this group instance would exceed the limit for aggregated groups
+            if (optimizedGroup.aggregatedGroupCount + 1 <= limit && optimizedGroup.aggregatedGroupCount < limit) {
+              // Aggregate quantities, times, and origins
+              optimizedGroup.totalPartsQuantity += groupQuantity; // Sum of parts
+              optimizedGroup.aggregatedGroupCount += 1; // Count of aggregated group instances
+              optimizedGroup.tempoImpressaoGrupo += group.tempoImpressaoGrupo;
+              optimizedGroup.pedidosOrigem.push({ pedidoId: group.pedidoId, pedidoNumero: group.pedidoNumero, groupId: group.id });
+
+              // Aggregate partes and check stock
+              let allPartesReady = true;
+              for (const item of group.items) {
+                const parteKey = item.id;
+                if (!optimizedGroup.partesNoGrupo[parteKey]) {
+                  optimizedGroup.partesNoGrupo[parteKey] = { nome: item.nome, quantidade: 0, estoqueAtual: 0, quantidadeNecessaria: 0 };
+                }
+                optimizedGroup.partesNoGrupo[parteKey].quantidade += item.quantidadePedido;
+                
+                const { estoqueTotal } = getStockForProduct(parteKey, 'parte', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+                optimizedGroup.partesNoGrupo[parteKey].estoqueAtual = estoqueTotal;
+                optimizedGroup.partesNoGrupo[parteKey].quantidadeNecessaria = optimizedGroup.partesNoGrupo[parteKey].quantidade;
+                
+                if (estoqueTotal < optimizedGroup.partesNoGrupo[parteKey].quantidade) {
+                  allPartesReady = false;
+                }
+              }
+              optimizedGroup.partesProntas = allPartesReady;
+
+              // Aggregate filamentos
+              let allInsumosReady = true;
+              for (const f of group.filamentosNecessarios) {
+                const filamentAggregatedId = f.id; // Corrected to use f.id
+                console.log("Calling getStockForProduct for filament:", filamentAggregatedId);
+                const { estoqueTotal: filamentEstoqueTotal } = getStockForProduct(filamentAggregatedId, 'insumo', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+                let existingOptimizedFilament = optimizedGroup.filamentosNecessarios.find(ef => ef.aggregatedId === filamentAggregatedId);
+
+                if (existingOptimizedFilament) {
+                  existingOptimizedFilament.quantidade += f.quantidade;
+                  existingOptimizedFilament.quantidadeNecessaria = (existingOptimizedFilament.quantidadeNecessaria || 0) + f.quantidade; // This is the total needed for the optimized group
+                  existingOptimizedFilament.estoqueAtual = filamentEstoqueTotal; // Update stock for the aggregated item
+                  console.log(`Updated existing filament: ${existingOptimizedFilament.nome}, Needed: ${existingOptimizedFilament.quantidadeNecessaria}, Stock: ${existingOptimizedFilament.estoqueAtual}`);
+                } else {
+                  existingOptimizedFilament = {
+                    ...f,
+                    aggregatedId: filamentAggregatedId,
+                    quantidadeNecessaria: f.quantidade,
+                    estoqueAtual: filamentEstoqueTotal,
+                  };
+                  optimizedGroup.filamentosNecessarios.push(existingOptimizedFilament);
+                  console.log(`New aggregated filament added: ${existingOptimizedFilament.nome}, Needed: ${existingOptimizedFilament.quantidadeNecessaria}, Stock: ${existingOptimizedFilament.estoqueAtual}`);
+                }
+                console.log(`Optimized Group (Filament Aggregation): ${existingOptimizedFilament.nome}, Needed: ${existingOptimizedFilament.quantidadeNecessaria}, Stock: ${existingOptimizedFilament.estoqueAtual}`);
+
+                if (filamentEstoqueTotal < existingOptimizedFilament.quantidadeNecessaria!) {
+                  allInsumosReady = false;
+                }
+              }
+
+              // Aggregate outrosInsumos
+              for (const i of group.outrosInsumosNecessarios || []) {
+                const insumoAggregatedId = i.id; // Corrected to use i.id
+                console.log("Calling getStockForProduct for insumo:", insumoAggregatedId);
+                const { estoqueTotal: insumoEstoqueTotal } = getStockForProduct(insumoAggregatedId, 'insumo', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+                let existingOptimizedInsumo = optimizedGroup.outrosInsumosNecessarios.find(ei => ei.aggregatedId === insumoAggregatedId);
+
+                if (existingOptimizedInsumo) {
+                  existingOptimizedInsumo.quantidade += i.quantidade;
+                  existingOptimizedInsumo.quantidadeNecessaria = (existingOptimizedInsumo.quantidadeNecessaria || 0) + i.quantidade; // This is the total needed for the optimized group
+                  existingOptimizedInsumo.estoqueAtual = insumoEstoqueTotal; // Update stock for the aggregated item
+                  console.log(`Updated existing insumo: ${existingOptimizedInsumo.nome}, Needed: ${existingOptimizedInsumo.quantidadeNecessaria}, Stock: ${existingOptimizedInsumo.estoqueAtual}`);
+                } else {
+                  existingOptimizedInsumo = {
+                    ...i,
+                    aggregatedId: insumoAggregatedId,
+                    quantidadeNecessaria: i.quantidade,
+                    estoqueAtual: insumoEstoqueTotal,
+                  };
+                  optimizedGroup.outrosInsumosNecessarios.push(existingOptimizedInsumo);
+                  console.log(`New aggregated insumo added: ${existingOptimizedInsumo.nome}, Needed: ${existingOptimizedInsumo.quantidadeNecessaria}, Stock: ${existingOptimizedInsumo.estoqueAtual}`);
+                }
+                console.log(`Optimized Group (Insumo Aggregation): ${existingOptimizedInsumo.nome}, Needed: ${existingOptimizedInsumo.quantidadeNecessaria}, Stock: ${existingOptimizedInsumo.estoqueAtual}`);
+
+                if (insumoEstoqueTotal < existingOptimizedInsumo.quantidadeNecessaria!) {
+                  allInsumosReady = false;
+                }
+              }
+              optimizedGroup.insumosProntos = allInsumosReady;
+
+              if (optimizedGroup.aggregatedGroupCount >= limit) {
+                // If the group is now full, move it to finalOptimizedGroups
+                finalOptimizedGroups.push(optimizedGroup);
+                potentialGroups.splice(potentialGroups.indexOf(optimizedGroup), 1); // Remove from current aggregating
+              }
+              foundExistingOptimizedGroup = true;
+              break;
+            }
+          }
+        }
+
+        if (!foundExistingOptimizedGroup) {
+          // Create a new optimized group
+          const newOptimizedGroup: OptimizedGroup = {
+            id: uuidv4(), // Generate a unique ID for each optimized group
+            partesNoGrupo: {},
+            totalPartsQuantity: groupQuantity, // Initial sum of parts for this group
+            aggregatedGroupCount: 1, // Initial count of aggregated group instances
+            pedidosOrigem: [{ pedidoId: group.pedidoId, pedidoNumero: group.pedidoNumero, groupId: group.id }],
+            sourceName: group.sourceName,
+            tempoImpressaoGrupo: group.tempoImpressaoGrupo,
+            corFilamento: group.corFilamento,
+            filamentosNecessarios: [],
+            outrosInsumosNecessarios: [],
+            items: [], // This is simplified as we are aggregating groups
+            insumosProntos: true, // Assume true, then set to false if any stock is insufficient
+            partesProntas: true, // Assume true, then set to false if any stock is insufficient
+          };
+
+          // Populate partesNoGrupo and check stock
+          for (const item of group.items) {
+            const { estoqueTotal } = getStockForProduct(item.id, 'parte', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+            newOptimizedGroup.partesNoGrupo[item.id] = { 
+              nome: item.nome, 
+              quantidade: item.quantidadePedido,
+              estoqueAtual: estoqueTotal,
+              quantidadeNecessaria: item.quantidadePedido
+            };
+            if (estoqueTotal < item.quantidadePedido) {
+              newOptimizedGroup.partesProntas = false;
+            }
+          }
+
+          // Populate filamentosNecessarios and check stock
+          for (const f of group.filamentosNecessarios) {
+            const filamentAggregatedId = f.id; // Corrected to use f.id
+            console.log("Calling getStockForProduct for new group filament:", filamentAggregatedId);
+            const { estoqueTotal } = getStockForProduct(filamentAggregatedId, 'insumo', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+            newOptimizedGroup.filamentosNecessarios.push({ ...f, aggregatedId: filamentAggregatedId, quantidadeNecessaria: f.quantidade, estoqueAtual: estoqueTotal });
+            console.log(`New optimized group filament: ${f.nome}, Needed: ${f.quantidade}, Stock: ${estoqueTotal}`);
+            if (estoqueTotal < f.quantidade) { // Use f.quantidade as the initial quantity needed for this specific item
+              newOptimizedGroup.insumosProntos = false;
+            }
+          }
+
+          // Populate outrosInsumosNecessarios and check stock
+          for (const i of group.outrosInsumosNecessarios || []) {
+            const insumoAggregatedId = i.id; // Corrected to use i.id
+            console.log("Calling getStockForProduct for new group insumo:", insumoAggregatedId);
+            const { estoqueTotal } = getStockForProduct(insumoAggregatedId, 'insumo', availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes);
+            newOptimizedGroup.outrosInsumosNecessarios.push({ ...i, aggregatedId: insumoAggregatedId, quantidadeNecessaria: i.quantidade, estoqueAtual: estoqueTotal });
+            console.log(`New optimized group insumo: ${i.nome}, Needed: ${i.quantidade}, Stock: ${estoqueTotal}`);
+            if (estoqueTotal < i.quantidade) { // Use i.quantidade as the initial quantity needed for this specific item
+              newOptimizedGroup.insumosProntos = false;
+            }
+          }
+          console.log(`New Optimized Group Created: ID=${newOptimizedGroup.id}, Source=${newOptimizedGroup.sourceName}, InsumosProntos=${newOptimizedGroup.insumosProntos}, PartesProntas=${newOptimizedGroup.partesProntas}`);
+          console.log(`  Filaments:`, newOptimizedGroup.filamentosNecessarios.map(f => ({ name: f.nome, needed: f.quantidadeNecessaria, stock: f.estoqueAtual })));
+          console.log(`  Other Insumos:`, newOptimizedGroup.outrosInsumosNecessarios.map(i => ({ name: i.nome, needed: i.quantidadeNecessaria, stock: i.estoqueAtual })));
+
+            if (1 >= limit) { // If a single group instance already meets or exceeds the limit, it forms its own optimized group
+            finalOptimizedGroups.push(newOptimizedGroup);
+          } else {
+            if (!currentAggregatingGroups.has(aggregationKey)) {
+              currentAggregatingGroups.set(aggregationKey, []);
+            }
+            currentAggregatingGroups.get(aggregationKey)!.push(newOptimizedGroup);
+          }
+        }
+      }
+
+      // Add any remaining aggregating groups to the final list
+      for (const groups of currentAggregatingGroups.values()) {
+        finalOptimizedGroups.push(...groups);
+      }
+
+      setOptimizedGroups(new Map(finalOptimizedGroups.map(g => [g.id, g])));
+      setCurrentAguardandoGroups(productionGroupsAguardando); // Store the raw aguardando groups
+    };
+
+    if (activeTab === 'aguardando') {
+      optimizeGroups();
+    }
+  }, [activeTab, pedidos, availablePecas, availablePartes, allInsumos, availableModels, availableKits, availableFilamentGroups, locaisProdutos, locaisInsumos, recipientes]);
 
   const fetchFilamentColors = async () => {
-    // This color map is copied from backend/src/app/estoque/page.jsx
     const colorMap = {
       'Amarelo': '#FFD700', 'Areia': '#C2B280', 'Azul': '#0000FF', 'Azul Bebê': '#89CFF0',
       'Azul Cyan': '#00FFFF', 'Azul macaron': '#ADD8E6', 'Azul Tiffany': '#0ABAB5',
@@ -109,24 +600,25 @@ export default function Producao() {
     setFilamentColors(colorMap);
   };
 
-  const fetchAllInsumos = async (): Promise<Insumo[]> => {
-    try {
-      const insumosCollection = collection(db, 'insumos');
-      const insumoSnapshot = await getDocs(insumosCollection);
-      const insumosList = insumoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Insumo));
-      setAllInsumos(insumosList);
-      return insumosList;
-    } catch (error) {
-      console.error("Error fetching all insumos: ", error);
-      return [];
-    }
-  };
+    const fetchAllInsumos = async (): Promise<Insumo[]> => {
+      try {
+        const insumosCollection = collection(db, 'insumos');
+        const insumoSnapshot = await getDocs(insumosCollection);
+        const insumosList = insumoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Insumo));
+        console.log("Fetched all insumos data:", insumosList); // Log all insumos
+        setAllInsumos(insumosList);
+        return insumosList;
+      } catch (error) {
+        console.error("Error fetching all insumos: ", error);
+        return [];
+      }
+    };
 
-  const fetchAvailablePecas = async (): Promise<Peca[]> => { // Renamed function
+  const fetchAvailablePecas = async (): Promise<Peca[]> => {
     try {
       const querySnapshot = await getDocs(collection(db, 'pecas'));
       const pecasList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Peca));
-      setAvailablePecas(pecasList); // Set to availablePecas
+      setAvailablePecas(pecasList);
       return pecasList;
     } catch (error) {
       console.error("Error fetching available pecas: ", error);
@@ -134,11 +626,11 @@ export default function Producao() {
     }
   };
 
-  const fetchAvailablePartes = async (): Promise<Parte[]> => { // New function
+  const fetchAvailablePartes = async (): Promise<Parte[]> => {
     try {
       const querySnapshot = await getDocs(collection(db, 'partes'));
       const partesList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Parte));
-      setAvailablePartes(partesList); // Set to availablePartes
+      setAvailablePartes(partesList);
       return partesList;
     } catch (error) {
       console.error("Error fetching available partes: ", error);
@@ -170,17 +662,18 @@ export default function Producao() {
     }
   };
 
-  const fetchAvailableFilamentGroups = async (): Promise<GrupoDeFilamento[]> => {
-    try {
-      const querySnapshot = await getDocs(collection(db, 'gruposDeFilamento'));
-      const filamentGroupsList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as GrupoDeFilamento[];
-      setAvailableFilamentGroups(filamentGroupsList);
-      return filamentGroupsList;
-    } catch (error) {
-      console.error("Error fetching available filament groups: ", error);
-      return [];
-    }
-  };
+    const fetchAvailableFilamentGroups = async (): Promise<GrupoDeFilamento[]> => {
+      try {
+        const querySnapshot = await getDocs(collection(db, 'gruposDeFilamento'));
+        const filamentGroupsList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as GrupoDeFilamento[];
+        console.log("Fetched all filament groups data:", filamentGroupsList); // Log all filament groups
+        setAvailableFilamentGroups(filamentGroupsList);
+        return filamentGroupsList;
+      } catch (error) {
+        console.error("Error fetching available filament groups: ", error);
+        return [];
+      }
+    };
 
   const fetchLocaisProdutos = async (): Promise<LocalProduto[]> => {
     try {
@@ -223,7 +716,7 @@ export default function Producao() {
     productType: 'parte' | 'peca' | 'modelo' | 'kit' | 'insumo',
     allPecasData: Peca[],
     allPartesData: Parte[],
-    allInsumosData: Insumo[], // Renamed parameter
+    allInsumosData: Insumo[],
     allModelsData: Modelo[],
     allKitsData: Kit[],
     allFilamentGroupsData: GrupoDeFilamento[],
@@ -248,7 +741,7 @@ export default function Producao() {
         let local;
         if (type === 'produto') {
           local = allLocaisProdutosData.find(l => l.id === recipiente.localEstoqueId);
-        } else { // type === 'insumo'
+        } else {
           local = allLocaisInsumosData.find(l => l.id === recipiente.localEstoqueId);
         }
         return {
@@ -271,18 +764,18 @@ export default function Producao() {
     } else if (productType === 'insumo') {
       const filamentGroup = allFilamentGroupsData.find(fg => fg.id === productId);
       if (filamentGroup) {
-        estoqueTotal = filamentGroup.estoqueTotalGramas || 0;
-        const relatedInsumos = allInsumosData.filter(i => i.grupoFilamentoId === productId);
-        let allPositions: PosicaoEstoque[] = [];
-        relatedInsumos.forEach(insumo => {
-          allPositions.push(...(insumo.posicoesEstoque || []));
-        });
-        posicoesEstoque = enrichPosicoesEstoque(allPositions, 'insumo');
+        // Para grupos de filamento, usar estoqueTotalGramas para o total.
+        // posicoesEstoque será um array vazio, pois GrupoDeFilamento não armazena posições diretamente.
+        estoqueTotal = filamentGroup.estoqueTotalGramas ?? 0;
+        posicoesEstoque = []; // Explicitamente vazio para grupos de filamento
+        console.log(`getStockForProduct (Filament Group): ID=${productId}, Name=${filamentGroup.nome}, EstoqueTotal=${estoqueTotal}, PosicoesEstoque=${JSON.stringify(posicoesEstoque)}`);
       } else {
         const insumo = allInsumosData.find(i => i.id === productId);
         if (insumo) {
-          estoqueTotal = insumo.estoqueTotal ?? calculateStockFromPositions(insumo.posicoesEstoque);
+          // Para insumos individuais, usar estoqueAtual, com fallback para estoqueTotal ou cálculo de posições.
+          estoqueTotal = (insumo as any).estoqueAtual ?? insumo.estoqueTotal ?? calculateStockFromPositions(insumo.posicoesEstoque);
           posicoesEstoque = enrichPosicoesEstoque(insumo.posicoesEstoque, 'insumo');
+          console.log(`getStockForProduct (Insumo): ID=${productId}, Name=${insumo.nome}, EstoqueTotal=${estoqueTotal}, PosicoesEstoque=${JSON.stringify(posicoesEstoque)}`);
         }
       }
     } else if (productType === 'peca') {
@@ -314,7 +807,6 @@ export default function Producao() {
     let hasAnyZeroStock = false;
     let hasAnyInsufficientStock = false;
 
-    // Check items (partes)
     for (const item of group.items) {
       const currentStock = item.estoqueAtualItem ?? 0;
       if (currentStock < item.quantidadePedido) {
@@ -325,7 +817,6 @@ export default function Producao() {
       }
     }
 
-    // Check filamentos
     for (const filamento of group.filamentosNecessarios) {
       const currentStock = filamento.estoqueAtualFilamento ?? 0;
       if (currentStock < filamento.quantidade) {
@@ -336,8 +827,7 @@ export default function Producao() {
       }
     }
 
-    // Check outros insumos
-    for (const insumo of (group.outrosInsumosNecessarios || [])) { // Safely access
+    for (const insumo of (group.outrosInsumosNecessarios || [])) {
       const currentStock = insumo.estoqueAtualInsumo ?? 0;
       if (currentStock < insumo.quantidade) {
         hasAnyInsufficientStock = true;
@@ -363,7 +853,7 @@ export default function Producao() {
       case 'peca': return 'pecas';
       case 'modelo': return 'modelos';
       case 'kit': return 'kits';
-      default: return undefined; // Should not happen for products
+      default: return undefined;
     }
   };
 
@@ -385,7 +875,6 @@ export default function Producao() {
         return;
       }
 
-      // Collect all items (partes, filamentos, outros insumos) that need debiting
       const itemsToProcess: {
         id: string;
         nome: string;
@@ -417,7 +906,7 @@ export default function Producao() {
         });
       });
 
-      (groupToUpdate.outrosInsumosNecessarios || []).forEach(insumo => { // Safely access
+      (groupToUpdate.outrosInsumosNecessarios || []).forEach(insumo => {
         itemsToProcess.push({
           id: insumo.id,
           nome: insumo.nome,
@@ -432,12 +921,12 @@ export default function Producao() {
         const quantityToDebit = debitType === 'full' ? item.quantidadePedido : Math.min(item.quantidadePedido, item.estoqueAtualItem);
 
         if (quantityToDebit === 0) {
-          continue; // No need to debit if quantity is zero
+          continue;
         }
 
         if (debitType === 'full' && item.estoqueAtualItem < item.quantidadePedido) {
           alert(`Erro: Estoque insuficiente para ${item.nome}. Necessário: ${item.quantidadePedido}, Disponível: ${item.estoqueAtualItem}.`);
-          return; // Stop processing if full debit is required but stock is insufficient
+          return;
         }
 
         const availablePositions = item.localEstoqueItem || [];
@@ -453,7 +942,7 @@ export default function Producao() {
             const lancamentoProduto: LancamentoProduto = {
               id: uuidv4(),
               produtoId: item.id,
-              tipoProduto: 'partes', // Corrected to plural 'partes'
+              tipoProduto: 'partes',
               tipoMovimento: 'saida',
               usuario: 'Sistema de Produção',
               observacao: `Débito de estoque automático para Pedido #${pedidoId}, Grupo de Produção: ${groupId} (única localização, tipo: ${debitType})`,
@@ -468,41 +957,37 @@ export default function Producao() {
               ]
             };
             await addDoc(collection(db, 'lancamentosProdutos'), cleanObject(lancamentoProduto));
-            console.log(`[DEBUG] Auto-debited ${quantityToDebit} of ${item.nome} from single location (Produto).`);
-          } else { // filamento or insumo
+          } else {
             const lancamentoInsumo: LancamentoInsumo = {
               id: uuidv4(),
               insumoId: item.id,
-              tipoInsumo: item.type === 'filamento' ? 'filamento' : 'outros', // Assuming 'outros' for generic 'insumo'
+              tipoInsumo: item.type === 'filamento' ? 'filamento' : 'outros',
               tipoMovimento: 'saida',
-              quantidade: quantityToDebit, // Direct quantity
-              unidadeMedida: item.type === 'filamento' ? 'gramas' : 'unidades', // Assuming units
+              quantidade: quantityToDebit,
+              unidadeMedida: item.type === 'filamento' ? 'gramas' : 'unidades',
               detalhes: `Débito de estoque automático para Pedido #${pedidoId}, Grupo de Produção: ${groupId} (única localização, tipo: ${debitType})`,
               data: Timestamp.fromDate(new Date()),
-              locais: [ // This should be an array of PosicaoEstoque
+              locais: [
                 {
                   recipienteId: singlePosition.recipienteId,
                   divisao: singlePosition.divisao,
-                  quantidade: quantityToDebit, // Quantity for this specific position
+                  quantidade: quantityToDebit,
                   localId: singlePosition.localId || '',
                 }
               ]
             };
             await addDoc(collection(db, 'lancamentosInsumos'), cleanObject(lancamentoInsumo));
-            console.log(`[DEBUG] Auto-debited ${quantityToDebit} of ${item.nome} from single location (Insumo).`);
           }
         } else if (availablePositions.length > 1 && quantityToDebit > 0) {
-          // Open selection modal for multiple locations
-          setItemToDebit({ ...item, pedidoId, groupId, debitType }); // Pass all properties
+          setItemToDebit({ ...item, pedidoId, groupId, debitType });
           setIsStockSelectionModalOpen(true);
-          return; // Wait for user selection via modal
+          return;
         } else if (availablePositions.length === 0 && quantityToDebit > 0) {
           alert(`Erro: Nenhuma posição de estoque encontrada para ${item.nome} para debitar ${quantityToDebit} unidades.`);
           return;
         }
       }
 
-      // If the loop completes without opening the modal, update status
       const newStatus: ProductionGroup['status'] = groupToUpdate.items.some(i => i.hasAssembly) ? 'em_montagem' : 'produzido';
       await updateProductionGroupStatus(pedidoId, groupId, newStatus);
       await refetchAllData();
@@ -513,11 +998,10 @@ export default function Producao() {
     }
   };
 
-  // Modified handleStockSelection to accept an array of debits
   const handleStockSelection = async (debits: { selectedPosition: PosicaoEstoque; quantityToDebit: number }[]) => {
     if (!itemToDebit) return;
 
-    const { id, nome, quantidadePedido, type, pedidoId, groupId, debitType } = itemToDebit; // Destructure directly
+    const { id, nome, quantidadePedido, type, pedidoId, groupId, debitType } = itemToDebit;
     let totalDebited = 0;
 
     try {
@@ -527,10 +1011,10 @@ export default function Producao() {
             const lancamentoProduto: LancamentoProduto = {
               id: uuidv4(),
               produtoId: id,
-              tipoProduto: 'partes', // Corrected to plural 'partes'
+              tipoProduto: 'partes',
               tipoMovimento: 'saida',
-              usuario: 'Sistema de Produção', // Re-added as it exists in the interface
-              observacao: `Débito de estoque manual para Pedido #${pedidoId}, Grupo de Produção: ${groupId} (múltiplas localizações, tipo: ${debitType})`, // Changed to observacao
+              usuario: 'Sistema de Produção',
+              observacao: `Débito de estoque manual para Pedido #${pedidoId}, Grupo de Produção: ${groupId} (múltiplas localizações, tipo: ${debitType})`,
               data: Timestamp.fromDate(new Date()),
               locais: [
                 {
@@ -543,21 +1027,21 @@ export default function Producao() {
             };
             await addDoc(collection(db, 'lancamentosProdutos'), cleanObject(lancamentoProduto));
             totalDebited += debit.quantityToDebit;
-          } else { // filamento or insumo
+          } else {
             const lancamentoInsumo: LancamentoInsumo = {
               id: uuidv4(),
               insumoId: id,
-              tipoInsumo: type === 'filamento' ? 'filamento' : 'outros', // Assuming 'outros' for generic 'insumo'
+              tipoInsumo: type === 'filamento' ? 'filamento' : 'outros',
               tipoMovimento: 'saida',
-              quantidade: debit.quantityToDebit, // Direct quantity
-              unidadeMedida: type === 'filamento' ? 'gramas' : 'unidades', // Assuming units
+              quantidade: debit.quantityToDebit,
+              unidadeMedida: type === 'filamento' ? 'gramas' : 'unidades',
               detalhes: `Débito de estoque manual para Pedido #${pedidoId}, Grupo de Produção: ${groupId} (múltiplas localizações, tipo: ${debitType})`,
               data: Timestamp.fromDate(new Date()),
-              locais: [ // This should be an array of PosicaoEstoque
+              locais: [
                 {
                   recipienteId: debit.selectedPosition.recipienteId,
                   divisao: debit.selectedPosition.divisao,
-                  quantidade: debit.quantityToDebit, // Quantity for this specific position
+                  quantidade: debit.quantityToDebit,
                   localId: debit.selectedPosition.localId || '',
                 }
               ]
@@ -567,13 +1051,9 @@ export default function Producao() {
           }
         }
       }
-      // After successful debits, check if the total quantity needed for the item has been met
-      // This logic assumes that the sum of debits from the modal should cover item.quantidadePedido
-      // If not, the user might need to be alerted or the process re-initiated.
-      // For now, we proceed with status update if any debit occurred.
+      
       if (debitType === 'full' && totalDebited < quantidadePedido) {
         alert(`Atenção: A quantidade total debitada (${totalDebited}) é menor que a quantidade necessária (${quantidadePedido}).`);
-        // Do not proceed with status update if full debit was intended but not met
         setIsStockSelectionModalOpen(false);
         setItemToDebit(null);
         await refetchAllData();
@@ -618,26 +1098,24 @@ export default function Producao() {
         const pedidoData = docSnap.data();
         const pedido: Pedido = {
           id: docSnap.id,
-          numero: pedidoData.numero,
+          numero: String(pedidoData.numero || 'N/A'),
           comprador: pedidoData.comprador,
           produtos: pedidoData.produtos,
           status: pedidoData.status,
+          itensProducao: pedidoData.itensProducao,
           etapas: pedidoData.etapas,
           custos: pedidoData.custos,
           tempos: pedidoData.tempos,
           dataCriacao: pedidoData.dataCriacao.toDate(),
           dataPrevisao: pedidoData.dataPrevisao.toDate(),
           dataConclusao: pedidoData.dataConclusao ? pedidoData.dataConclusao.toDate() : null,
-          productionGroups: [], // Initialize as empty, will be populated below
+          productionGroups: [],
         };
 
-        // Check if productionGroups already exist in Firestore data
         if (pedidoData.productionGroups && pedidoData.productionGroups.length > 0) {
-          // If they exist, use them and enrich with real-time stock data
           pedido.productionGroups = pedidoData.productionGroups.map((group: ProductionGroup) => {
             let groupHasAssembly = false;
 
-            // Prioritize checking by ID if available (for new data)
             if (group.originalPecaId) {
                 const peca = pecasData.find(p => p.id === group.originalPecaId);
                 if (peca && peca.tempoMontagem && peca.tempoMontagem > 0) {
@@ -654,7 +1132,6 @@ export default function Producao() {
                     groupHasAssembly = true;
                 }
             } else {
-                // Fallback to checking by name if IDs are not present (for old data)
                 const sourceNames = (group.sourceId || group.sourceName).split(', ');
                 for (const sourceName of sourceNames) {
                     const peca = pecasData.find(p => p.nome === sourceName);
@@ -683,15 +1160,14 @@ export default function Producao() {
                 const { estoqueTotal, posicoesEstoque } = getStockForProduct(item.id, 'parte', pecasData, partesData, allInsumosData, modelsData, kitsData, filamentGroupsData, locaisProdutosData, locaisInsumosData, recipientesData);
                 return {
                   ...item,
-                  hasAssembly: item.hasAssembly ?? groupHasAssembly, // Use persisted hasAssembly if available, otherwise calculate
+                  hasAssembly: item.hasAssembly ?? groupHasAssembly,
                   estoqueAtualItem: estoqueTotal,
                   localEstoqueItem: posicoesEstoque,
                 };
               }),
               filamentosNecessarios: (group.filamentosNecessarios || [])
-                .filter(filamento => filamento.tipo === 'filamento') // Corrected filter: only check 'tipo'
+                .filter(filamento => filamento.tipo === 'filamento')
                 .map(filamento => {
-                  // Here, filamento.id is already the grupoFilamentoId or insumoId
                   const { estoqueTotal, posicoesEstoque } = getStockForProduct(filamento.id, 'insumo', pecasData, partesData, allInsumosData, modelsData, kitsData, filamentGroupsData, locaisProdutosData, locaisInsumosData, recipientesData);
                   return {
                     ...filamento,
@@ -700,20 +1176,19 @@ export default function Producao() {
                   };
                 }),
               outrosInsumosNecessarios: (group.outrosInsumosNecessarios || [])
-                .filter(insumo => insumo.id) // Only process valid insumo entries
+                .filter(insumo => insumo.id)
                 .map(insumo => {
                   let insumoName = 'Insumo Desconhecido';
                   let currentEstoque = 0;
                   let currentLocalEstoque: PosicaoEstoque[] = [];
 
-                  const foundInsumo = allInsumosData.find(i => i.id === insumo.id); // allInsumosData now contains all insumos
+                  const foundInsumo = allInsumosData.find(i => i.id === insumo.id);
                   if (foundInsumo) {
                     insumoName = foundInsumo.nome;
                     const { estoqueTotal, posicoesEstoque } = getStockForProduct(foundInsumo.id, 'insumo', pecasData, partesData, allInsumosData, modelsData, kitsData, filamentGroupsData, locaisProdutosData, locaisInsumosData, recipientesData);
                     currentEstoque = estoqueTotal;
                     currentLocalEstoque = posicoesEstoque;
                   } else {
-                    console.warn(`[ProducaoPage] Insumo com ID ${insumo.id} não encontrado.`);
                     insumoName = `Insumo desconhecido (ID: ${insumo.id})`;
                   }
 
@@ -726,274 +1201,11 @@ export default function Producao() {
                 }),
             };
           });
-        } else {
-          // --- NEW LOGIC TO CONSOLIDATE PRODUCTION GROUPS ---
-
-          // 1. Helper to create a canonical key for a print group
-          const createCanonicalKey = (grupo: GrupoImpressao): string => {
-            const parteIds = [...(grupo.partes || [])].map(p => p.parteId).sort().join(',');
-            const filamentoGroupIds = [...(grupo.filamentos || [])]
-              .map(f => f.grupoFilamentoId)
-              .filter(Boolean) // Remove undefined/null
-              .sort()
-              .join(',');
-            return `partes:[${parteIds}]-filamentos:[${filamentoGroupIds}]`;
-          };
-
-          // 2. Collect all print groups from the order with multiplied quantities
-          const allPrintGroupsNeeded: {
-            grupo: GrupoImpressao,
-            totalQuantity: number,
-            sourceName: string,
-            sourceType: 'peca' | 'modelo' | 'kit',
-            originalPecaId?: string,
-            originalModeloId?: string,
-            originalKitId?: string,
-          }[] = [];
-
-          for (const produtoPedido of pedido.produtos) {
-            if (produtoPedido.tipo === 'peca') {
-              const pecaDetails = pecasData.find(p => p.id === produtoPedido.produtoId);
-              if (pecaDetails?.gruposImpressao) {
-                pecaDetails.gruposImpressao.forEach(gi => {
-                  allPrintGroupsNeeded.push({
-                    grupo: gi,
-                    totalQuantity: produtoPedido.quantidade,
-                    sourceName: pecaDetails.nome,
-                    sourceType: 'peca',
-                    originalPecaId: pecaDetails.id,
-                  });
-                });
-              }
-            } else if (produtoPedido.tipo === 'modelo') {
-              const modeloDetails = modelsData.find(m => m.id === produtoPedido.produtoId);
-              if (modeloDetails?.pecas) {
-                for (const pecaRef of modeloDetails.pecas) {
-                  const pecaDetails = pecasData.find(p => p.id === pecaRef.pecaId);
-                  if (pecaDetails?.gruposImpressao) {
-                    pecaDetails.gruposImpressao.forEach(gi => {
-                      allPrintGroupsNeeded.push({
-                        grupo: gi,
-                        totalQuantity: produtoPedido.quantidade * pecaRef.quantidade,
-                        sourceName: modeloDetails.nome,
-                        sourceType: 'modelo',
-                        originalModeloId: modeloDetails.id,
-                        originalPecaId: pecaDetails.id, // Also include peca ID if it's a model
-                      });
-                    });
-                  }
-                }
-              }
-            } else if (produtoPedido.tipo === 'kit') {
-              const kitDetails = kitsData.find(k => k.id === produtoPedido.produtoId);
-              if (kitDetails?.modelos) {
-                for (const modeloRef of kitDetails.modelos) {
-                  const modeloDetails = modelsData.find(m => m.id === modeloRef.modeloId);
-                  if (modeloDetails?.pecas) {
-                    for (const pecaRef of modeloDetails.pecas) {
-                      const pecaDetails = pecasData.find(p => p.id === pecaRef.pecaId);
-                      if (pecaDetails?.gruposImpressao) {
-                        pecaDetails.gruposImpressao.forEach(gi => {
-                          allPrintGroupsNeeded.push({
-                            grupo: gi,
-                            totalQuantity: produtoPedido.quantidade * modeloRef.quantidade * pecaRef.quantidade,
-                            sourceName: kitDetails.nome,
-                            sourceType: 'kit',
-                            originalKitId: kitDetails.id,
-                            originalModeloId: modeloDetails?.id, // Also include model ID if it's a kit
-                            originalPecaId: pecaDetails.id, // Also include peca ID if it's a kit
-                          });
-                        });
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // 3. Aggregate print groups by the canonical key
-          const aggregatedGroups: Record<string, {
-            originalGroup: GrupoImpressao;
-            totalQuantity: number;
-            sources: { name: string, type: 'peca' | 'modelo' | 'kit' }[];
-          }> = {};
-
-          for (const { grupo, totalQuantity, sourceName, sourceType } of allPrintGroupsNeeded) {
-            const key = createCanonicalKey(grupo);
-            if (!aggregatedGroups[key]) {
-              aggregatedGroups[key] = {
-                originalGroup: grupo,
-                totalQuantity: 0,
-                sources: [],
-              };
-            }
-            aggregatedGroups[key].totalQuantity += totalQuantity;
-            // Avoid duplicate sources
-            if (!aggregatedGroups[key].sources.some(s => s.name === sourceName && s.type === sourceType)) {
-              aggregatedGroups[key].sources.push({ name: sourceName, type: sourceType });
-            }
-          }
-
-          // 4. Split aggregated groups by `quantidadeMaxima` and create final ProductionGroup objects
-          const finalProductionGroups: ProductionGroup[] = [];
-          for (const key in aggregatedGroups) {
-            const { originalGroup, totalQuantity, sources } = aggregatedGroups[key];
-            const limit = originalGroup.quantidadeMaxima || 1; // Default to 1 if not set
-            
-            let groupHasAssembly = false;
-            let originalPecaId: string | undefined;
-            let originalModeloId: string | undefined;
-            let originalKitId: string | undefined;
-
-            for (const source of sources) {
-                if (source.type === 'peca') {
-                    const peca = pecasData.find(p => p.nome === source.name);
-                    if (peca) {
-                        originalPecaId = peca.id;
-                        if (peca.tempoMontagem && peca.tempoMontagem > 0) {
-                            groupHasAssembly = true;
-                            break;
-                        }
-                    }
-                } else if (source.type === 'modelo') {
-                    const modelo = modelsData.find(m => m.id === source.name);
-                    if (modelo) {
-                        originalModeloId = modelo.id;
-                        if (modelo.tempoMontagem && modelo.tempoMontagem > 0) {
-                            groupHasAssembly = true;
-                            break;
-                        }
-                    }
-                } else if (source.type === 'kit') {
-                    const kit = kitsData.find(k => k.nome === source.name);
-                    if (kit) {
-                        originalKitId = kit.id;
-                        if (kit.tempoMontagem && kit.tempoMontagem > 0) {
-                            groupHasAssembly = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            let remainingQuantity = totalQuantity;
-            
-            while (remainingQuantity > 0) {
-              const quantityForThisRun = Math.min(remainingQuantity, limit);
-              
-              const productionGroup: ProductionGroup = {
-                id: uuidv4(),
-                sourceId: sources.map(s => s.name).join(', '), // Combine source names
-                sourceType: sources.length > 1 ? 'kit' : sources[0].type, // Generalize sourceType
-                sourceName: originalGroup.nome, // Use the print group's name
-                originalPecaId: originalPecaId,
-                originalModeloId: originalModeloId,
-                originalKitId: originalKitId,
-                corFilamento: filamentGroupsData.find(fg => fg.id === originalGroup.filamentos[0]?.grupoFilamentoId)?.cor || 'N/A',
-                items: originalGroup.partes.map(parte => {
-                  const parteDetails = partesData.find(p => p.id === parte.parteId);
-                  return {
-                    id: parte.parteId,
-                    nome: parteDetails?.nome || 'N/A',
-                    quantidadePedido: parte.quantidade * quantityForThisRun,
-                    hasAssembly: groupHasAssembly,
-                    tipoProduto: 'parte', // Explicitly set tipoProduto for parts
-                  };
-                }),
-                filamentosNecessarios: originalGroup.filamentos
-                  .filter(filamento => filamento.tipo === 'filamento' && (filamento.grupoFilamentoId || filamento.insumoId))
-                  .map(filamento => {
-                    let filamentName = 'Filamento Desconhecido';
-                    let filamentId = filamento.grupoFilamentoId || filamento.insumoId!;
-                    let currentEstoque = 0;
-                    let currentLocalEstoque: PosicaoEstoque[] = [];
-
-                    if (filamento.grupoFilamentoId) {
-                      const filamentGroup = filamentGroupsData.find(fg => fg.id === filamento.grupoFilamentoId);
-                      if (filamentGroup) {
-                        filamentName = filamentGroup.nome;
-                        const { estoqueTotal, posicoesEstoque } = getStockForProduct(filamentGroup.id, 'insumo', pecasData, partesData, allInsumosData, modelsData, kitsData, filamentGroupsData, locaisProdutosData, locaisInsumosData, recipientesData);
-                        currentEstoque = estoqueTotal;
-                        currentLocalEstoque = posicoesEstoque;
-                      } else {
-                        console.warn(`[ProducaoPage] Grupo de filamento com ID ${filamento.grupoFilamentoId} não encontrado.`);
-                        filamentName = `Filamento desconhecido (ID: ${filamento.grupoFilamentoId})`;
-                      }
-                    } else if (filamento.insumoId) {
-                      const insumo = allInsumosData.find(i => i.id === filamento.insumoId);
-                      if (insumo) {
-                        filamentName = insumo.nome;
-                        const { estoqueTotal, posicoesEstoque } = getStockForProduct(insumo.id, 'insumo', pecasData, partesData, allInsumosData, modelsData, kitsData, filamentGroupsData, locaisProdutosData, locaisInsumosData, recipientesData);
-                        currentEstoque = estoqueTotal;
-                        currentLocalEstoque = posicoesEstoque;
-                      } else {
-                        console.warn(`[ProducaoPage] Insumo de filamento com ID ${filamento.insumoId} não encontrado.`);
-                        filamentName = `Filamento desconhecido (ID: ${filamento.insumoId})`;
-                      }
-                    }
-
-                    return {
-                      id: filamentId,
-                      nome: filamentName,
-                      quantidade: filamento.quantidade * quantityForThisRun,
-                      tipo: filamento.tipo,
-                      estoqueAtualFilamento: currentEstoque,
-                      localEstoqueFilamento: currentLocalEstoque,
-                    };
-                  }),
-                // New field for other insumos
-                outrosInsumosNecessarios: (originalGroup.outrosInsumos || [])
-                  .filter(insumo => insumo.insumoId) // Only process valid insumo entries
-                  .map(insumo => {
-                    let insumoName = 'Insumo Desconhecido';
-                    let currentEstoque = 0;
-                    let currentLocalEstoque: PosicaoEstoque[] = [];
-
-                    const foundInsumo = allInsumosData.find(i => i.id === insumo.insumoId); // allInsumosData now contains all insumos
-                    if (foundInsumo) {
-                      insumoName = foundInsumo.nome;
-                      const { estoqueTotal, posicoesEstoque } = getStockForProduct(foundInsumo.id, 'insumo', pecasData, partesData, allInsumosData, modelsData, kitsData, filamentGroupsData, locaisProdutosData, locaisInsumosData, recipientesData);
-                      currentEstoque = estoqueTotal;
-                      currentLocalEstoque = posicoesEstoque;
-                    } else {
-                      console.warn(`[ProducaoPage] Insumo com ID ${insumo.insumoId} não encontrado.`);
-                      insumoName = `Insumo desconhecido (ID: ${insumo.insumoId})`;
-                    }
-
-                    return {
-                      id: insumo.insumoId!,
-                      nome: insumoName,
-                      quantidade: insumo.quantidade * quantityForThisRun,
-                      tipo: insumo.tipo,
-                      etapaInstalacao: insumo.etapaInstalacao,
-                      estoqueAtualInsumo: currentEstoque, // New property for other insumos
-                      localEstoqueInsumo: currentLocalEstoque, // New property for other insumos
-                    };
-                  }),
-                tempoImpressaoGrupo: originalGroup.tempoImpressao * quantityForThisRun,
-                consumoFilamentoGrupo: originalGroup.filamentos
-                  .filter(f => f.tipo === 'filamento')
-                  .reduce((acc, f) => acc + f.quantidade, 0) * quantityForThisRun,
-                status: 'aguardando',
-                pedidoId: pedido.id,
-                pedidoNumero: pedido.numero,
-                pedidoComprador: pedido.comprador,
-                pedidoTotalTempoImpressao: 0,
-                pedidoTotalConsumoFilamento: 0,
-                pedidoTotalTempoMontagem: 0,
-              };
-              finalProductionGroups.push(productionGroup);
-              remainingQuantity -= quantityForThisRun;
-            }
-          }
-
-          pedido.productionGroups = finalProductionGroups;
-          const cleanedProductionGroups = cleanObject(pedido.productionGroups);
-          await updateDoc(doc(db, 'pedidos', pedido.id), { productionGroups: cleanedProductionGroups });
         }
         
-        // Recalculate totals based on the final production groups and products
+        // The productionGroups are now only enriched if they already exist in Firestore.
+        // New production groups for 'aguardando' status will be generated on the fly by optimizeGroups.
+        
         if (pedido.productionGroups && pedido.productionGroups.length > 0) {
           pedido.tempos.impressao = pedido.productionGroups.reduce((acc, group) => acc + group.tempoImpressaoGrupo, 0);
           pedido.tempos.totalConsumoFilamento = pedido.productionGroups.reduce((acc, group) => acc + group.consumoFilamentoGrupo, 0);
@@ -1023,6 +1235,70 @@ export default function Producao() {
     }
   };
 
+  const handleStartOptimizedProduction = async (group: OptimizedGroup) => {
+    const batch = writeBatch(db);
+    const updatesByPedido = new Map<string, string[]>();
+
+    // Group updates by pedidoId
+    for (const origem of group.pedidosOrigem) {
+      if (!updatesByPedido.has(origem.pedidoId)) {
+        updatesByPedido.set(origem.pedidoId, []);
+      }
+      updatesByPedido.get(origem.pedidoId)!.push(origem.groupId);
+    }
+
+    for (const [pedidoId, groupIdsToUpdate] of updatesByPedido.entries()) {
+      const pedidoRef = doc(db, 'pedidos', pedidoId);
+      const pedidoData = pedidos.find(p => p.id === pedidoId);
+
+      if (pedidoData) {
+        // Filter out the groups that are being launched from the existing productionGroups
+        // and add the new, snapshotted versions.
+        const existingProductionGroups = pedidoData.productionGroups || [];
+        const nonLaunchedGroups = existingProductionGroups.filter(pg => !groupIdsToUpdate.includes(pg.id));
+
+        const launchedGroups: ProductionGroup[] = [];
+        for (const launchedGroupId of groupIdsToUpdate) {
+          const originalAguardandoGroup = currentAguardandoGroups.find(g => g.pedidoId === pedidoId && g.id === launchedGroupId);
+          if (originalAguardandoGroup) {
+            let newStatus: ProductionGroup['status'];
+            if (group.partesProntas) {
+              newStatus = 'produzido'; // Skip production if parts are ready
+            } else {
+              newStatus = 'em_producao';
+            }
+
+            // Create a deep copy to ensure immutability and set new status
+            const newLaunchedGroup: ProductionGroup = {
+              ...originalAguardandoGroup,
+              status: newStatus,
+              startedAt: Timestamp.now(),
+              completedAt: null, // Ensure completedAt is null when starting
+            };
+            launchedGroups.push(newLaunchedGroup);
+          }
+        }
+
+        const updatedGroups = [...nonLaunchedGroups, ...launchedGroups];
+
+        let newStatus = pedidoData.status;
+        if (newStatus === 'aguardando') {
+          newStatus = 'em_producao';
+        }
+        
+        const cleanedUpdatedGroups = cleanObject(updatedGroups);
+        batch.update(pedidoRef, { productionGroups: cleanedUpdatedGroups, status: newStatus });
+      }
+    }
+
+    try {
+      await batch.commit();
+      refetchAllData();
+    } catch (error) {
+      console.error("Error starting optimized production:", error);
+      alert("Failed to start production. Check console for details.");
+    }
+  };
 
   const updateProductionGroupStatus = async (pedidoId: string, groupId: string, newStatus: ProductionGroup['status']) => {
     try {
@@ -1067,11 +1343,9 @@ export default function Producao() {
       const cleanedUpdatedGroups = cleanObject(updatedGroups);
       await updateDoc(doc(db, 'pedidos', pedidoId), { productionGroups: cleanedUpdatedGroups });
 
-      // Create Lancamento documents based on new status
       const currentGroup = updatedGroups.find(g => g.id === groupId);
       if (currentGroup) {
         if (newStatus === 'produzido') {
-          // Consumir filamentos e outros insumos de impressão
           for (const filamento of currentGroup.filamentosNecessarios) {
             if (filamento.quantidade > 0) {
               const lancamentoInsumo: LancamentoInsumo = {
@@ -1081,13 +1355,12 @@ export default function Producao() {
                 tipoMovimento: 'saida',
                 quantidade: filamento.quantidade,
                 unidadeMedida: 'gramas',
-                data: Timestamp.fromDate(new Date()), // Use 'data'
+                data: Timestamp.fromDate(new Date()),
                 origem: `Consumo Impressão Pedido #${pedidoToUpdate.numero}, Grupo: ${currentGroup.sourceName}`,
-                detalhes: `Consumo de filamento ${filamento.nome} para produção de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`, // Use 'detalhes'
-                locais: filamento.localEstoqueFilamento || [], // Added locais
+                detalhes: `Consumo de filamento ${filamento.nome} para produção de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`,
+                locais: filamento.localEstoqueFilamento || [],
               };
               await addDoc(collection(db, 'lancamentosInsumos'), cleanObject(lancamentoInsumo));
-              console.log(`[DEBUG] Created lancamentosInsumos for filament: ${filamento.nome} (Impressão)`);
             }
           }
           for (const insumo of (currentGroup.outrosInsumosNecessarios || [])) {
@@ -1095,35 +1368,32 @@ export default function Producao() {
               const lancamentoInsumo: LancamentoInsumo = {
                 id: uuidv4(),
                 insumoId: insumo.id,
-                tipoInsumo: insumo.tipo as 'tempo' | 'material' | 'outros',
+                tipoInsumo: insumo.tipo as 'material' | 'outros', // Changed from 'tempo' | 'material' | 'outros'
                 tipoMovimento: 'saida',
                 quantidade: insumo.quantidade,
-                unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades',
-                data: Timestamp.fromDate(new Date()), // Use 'data'
+                unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades', // 'tempo' still exists here, needs to be removed
+                data: Timestamp.fromDate(new Date()),
                 origem: `Consumo Impressão Pedido #${pedidoToUpdate.numero}, Grupo: ${currentGroup.sourceName}`,
-                detalhes: `Consumo de insumo ${insumo.nome} para produção de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`, // Use 'detalhes'
-                locais: insumo.localEstoqueInsumo || [], // Added locais
+                detalhes: `Consumo de insumo ${insumo.nome} para produção de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`,
+                locais: insumo.localEstoqueInsumo || [],
               };
               await addDoc(collection(db, 'lancamentosInsumos'), cleanObject(lancamentoInsumo));
-              console.log(`[DEBUG] Created lancamentosInsumos for other insumo: ${insumo.nome} (Impressão)`);
             }
           }
         } else if (newStatus === 'montado') {
-          // Consumir partes e outros insumos de montagem
           for (const item of currentGroup.items) {
             if (item.quantidadePedido > 0) {
-              const lancamentoProduto: LancamentoProduto = { // Use LancamentoProduto
+              const lancamentoProduto: LancamentoProduto = {
                 id: uuidv4(),
                 produtoId: item.id,
-                tipoProduto: mapTipoProdutoToPlural(item.tipoProduto) as 'partes' | 'pecas' | 'modelos' | 'kits', // Map to plural and cast
+                tipoProduto: mapTipoProdutoToPlural(item.tipoProduto) as 'partes' | 'pecas' | 'modelos' | 'kits',
                 tipoMovimento: 'saida',
-                usuario: 'Sistema de Produção', // Added
-                observacao: `Consumo de ${item.nome} para montagem de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`, // Changed to observacao
-                data: Timestamp.fromDate(new Date()), // Use 'data'
-                locais: item.localEstoqueItem || [], // Add locais from item.localEstoqueItem, ensure it's an array
+                usuario: 'Sistema de Produção',
+                observacao: `Consumo de ${item.nome} para montagem de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`,
+                data: Timestamp.fromDate(new Date()),
+                locais: item.localEstoqueItem || [],
               };
-              await addDoc(collection(db, 'lancamentosProdutos'), cleanObject(lancamentoProduto)); // Use lancamentosProdutos
-              console.log(`[DEBUG] Created lancamentosProdutos for item: ${item.nome} (Montagem)`);
+              await addDoc(collection(db, 'lancamentosProdutos'), cleanObject(lancamentoProduto));
             }
           }
           for (const insumo of (currentGroup.outrosInsumosNecessarios || [])) {
@@ -1131,33 +1401,22 @@ export default function Producao() {
               const lancamentoInsumo: LancamentoInsumo = {
                 id: uuidv4(),
                 insumoId: insumo.id,
-                tipoInsumo: insumo.tipo as 'tempo' | 'material' | 'outros',
+                tipoInsumo: insumo.tipo as 'material' | 'outros', // Changed from 'tempo' | 'material' | 'outros'
                 tipoMovimento: 'saida',
                 quantidade: insumo.quantidade,
-                unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades',
-                data: Timestamp.fromDate(new Date()), // Use 'data'
+                unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades', // 'tempo' still exists here, needs to be removed
+                data: Timestamp.fromDate(new Date()),
                 origem: `Consumo Montagem Pedido #${pedidoToUpdate.numero}, Grupo: ${currentGroup.sourceName}`,
-                detalhes: `Consumo de insumo ${insumo.nome} para montagem de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`, // Use 'detalhes'
-                locais: insumo.localEstoqueInsumo || [], // Added locais
+                detalhes: `Consumo de insumo ${insumo.nome} para montagem de ${currentGroup.sourceName} (Pedido ${pedidoToUpdate.numero})`,
+                locais: insumo.localEstoqueInsumo || [],
               };
               await addDoc(collection(db, 'lancamentosInsumos'), cleanObject(lancamentoInsumo));
-              console.log(`[DEBUG] Created lancamentosInsumos for other insumo: ${insumo.nome} (Montagem)`);
             }
           }
         }
       }
 
-      // Re-fetch all data to ensure UI is up-to-date after any status update
-      const insumos = await fetchAllInsumos();
-      const pecas = await fetchAvailablePecas();
-      const partes = await fetchAvailablePartes();
-      const models = await fetchAvailableModels();
-      const kits = await fetchAvailableKits();
-      const filamentGroups = await fetchAvailableFilamentGroups();
-      const locaisProdutosData = await fetchLocaisProdutos();
-      const locaisInsumosData = await fetchLocaisInsumos();
-      const recipientesData = await fetchRecipientes();
-      fetchPedidos(insumos, pecas, partes, models, kits, filamentGroups, locaisProdutosData, locaisInsumosData, recipientesData);
+      await refetchAllData();
 
     } catch (error) {
       console.error("Error updating production group status: ", error);
@@ -1165,13 +1424,12 @@ export default function Producao() {
   };
 
   const revertProductionGroupStatus = async (pedidoId: string, groupId: string, currentStatus: ProductionGroup['status']) => {
-    let newStatus: ProductionGroup['status'] = 'aguardando'; // Default revert
+    let newStatus: ProductionGroup['status'] = 'aguardando';
 
     if (currentStatus === 'produzido') newStatus = 'em_producao';
     else if (currentStatus === 'montado') newStatus = 'produzido';
     else if (currentStatus === 'concluido') newStatus = 'montado';
     else if (currentStatus === 'em_producao') newStatus = 'aguardando';
-
 
     try {
       const pedidoToUpdate = pedidos.find(p => p.id === pedidoId);
@@ -1183,7 +1441,7 @@ export default function Producao() {
       const updatedGroups = (pedidoToUpdate.productionGroups || []).map(group => {
         if (group.id === groupId) {
           const updatedGroup: ProductionGroup = {
-            ...group, // Preserve dynamic data
+            ...group,
             status: newStatus,
           };
 
@@ -1193,7 +1451,7 @@ export default function Producao() {
           } else if (newStatus === 'produzido') {
             updatedGroup.completedAt = new Date();
             updatedGroup.startedAt = updatedGroup.startedAt ?? null;
-          } else { // aguardando or other reverted states
+          } else {
             updatedGroup.startedAt = null;
             updatedGroup.completedAt = null;
           }
@@ -1239,21 +1497,126 @@ export default function Producao() {
 
   const handleLaunchSuccess = async () => {
     if (selectedProductionGroup) {
-      // Explicitly update the status to 'produzido' after successful launch from modal
       await updateProductionGroupStatus(selectedProductionGroup.pedidoId, selectedProductionGroup.id, 'produzido');
     }
-      // Re-fetch all data to ensure UI is up-to-date after production launch
-      const insumos = await fetchAllInsumos();
-      const pecas = await fetchAvailablePecas();
-      const partes = await fetchAvailablePartes();
-      const models = await fetchAvailableModels();
-      const kits = await fetchAvailableKits();
-      const filamentGroups = await fetchAvailableFilamentGroups();
-      const locaisProdutosData = await fetchLocaisProdutos();
-      const locaisInsumosData = await fetchLocaisInsumos();
-      const recipientesData = await fetchRecipientes();
-      fetchPedidos(insumos, pecas, partes, models, kits, filamentGroups, locaisProdutosData, locaisInsumosData, recipientesData);
-      handleCloseLaunchModal(); // Close the modal after success
+    await refetchAllData();
+    handleCloseLaunchModal();
+  };
+
+  const handleConcluirImpressao = async (group: ProductionGroup) => {
+    const batch = writeBatch(db);
+    const pedidoRef = doc(db, 'pedidos', group.pedidoId);
+
+    try {
+        for (const filamento of group.filamentosNecessarios) {
+            const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
+            batch.set(lancamentoInsumoRef, {
+                insumoId: filamento.id,
+                tipoInsumo: 'filamento',
+                tipoMovimento: 'saida',
+                quantidade: filamento.quantidade,
+                unidadeMedida: 'gramas',
+                data: Timestamp.now(),
+                detalhes: `Consumo para grupo de impressão: ${group.sourceName} do Pedido #${group.pedidoNumero}`,
+            });
+        }
+
+        const lancamentoServicoRef = doc(collection(db, 'lancamentoServicos'));
+        batch.set(lancamentoServicoRef, {
+            servicoId: 'impressao_3d',
+            pedidoId: group.pedidoId,
+            quantidade: group.tempoImpressaoGrupo / 60,
+            data: Timestamp.now(),
+            usuario: auth.currentUser?.displayName || 'Sistema',
+        });
+
+        const pedidoDoc = await getDoc(pedidoRef);
+        if (!pedidoDoc.exists()) throw new Error("Pedido não encontrado.");
+        
+        const pedidoData = pedidoDoc.data() as Pedido;
+        const peca = availablePecas.find(p => p.id === group.originalPecaId);
+        if (!peca) throw new Error("Peça original do grupo não encontrada.");
+
+        const nextStatus = peca.tipoPeca === 'composta_um_grupo_com_montagem' || peca.tipoPeca === 'composta_multiplos_grupos'
+            ? 'em_montagem_pecas'
+            : 'processando_embalagem';
+
+        const updatedItensProducao = pedidoData.itensProducao?.map(item => {
+            if (item.refId === group.originalPecaId) {
+                const newPartesDisponiveis = [...(item.partesDisponiveis || [])];
+                
+                group.items.forEach(producedItem => {
+                    const existingParte = newPartesDisponiveis.find(p => p.parteId === producedItem.id);
+                    if (existingParte) {
+                        existingParte.quantidade += producedItem.quantidadePedido;
+                    } else {
+                        newPartesDisponiveis.push({ parteId: producedItem.id, quantidade: producedItem.quantidadePedido });
+                    }
+                });
+
+                return { ...item, status: nextStatus, partesDisponiveis: newPartesDisponiveis };
+            }
+            return item;
+        }) || [];
+
+        batch.update(pedidoRef, { itensProducao: updatedItensProducao });
+
+        const firstItem = group.items[0];
+        if (firstItem) {
+            const excessQuantity = 0; // Placeholder for actual excess calculation
+            if (excessQuantity > 0) {
+                const itemProducao = updatedItensProducao.find(ip => ip.refId === group.originalPecaId);
+                setExcessPartData({
+                    id: firstItem.id,
+                    nome: firstItem.nome,
+                    sku: 'N/A',
+                    quantidade: excessQuantity,
+                    pecaTipo: peca.tipoPeca,
+                    itemProducaoId: itemProducao!.id
+                });
+                setIsExcessModalOpen(true);
+            }
+        }
+
+        await batch.commit();
+        await updateProductionGroupStatus(group.pedidoId, group.id, 'produzido');
+        refetchAllData();
+
+    } catch (error) {
+        console.error("Erro ao concluir impressão:", error);
+        alert("Falha ao concluir a impressão. Verifique o console.");
+    }
+  };
+
+  const handleSendToAssembly = async (itemProducaoId: string, parteId: string, quantidade: number) => {
+    try {
+        const pedido = pedidos.find(p => p.itensProducao?.some(item => item.id === itemProducaoId));
+        if (!pedido) throw new Error("Pedido contendo o item de produção não foi encontrado.");
+
+        const pedidoRef = doc(db, 'pedidos', pedido.id);
+        const updatedItens = pedido.itensProducao!.map(item => {
+            if (item.id === itemProducaoId) {
+                const newPartes = [...(item.partesDisponiveis || [])];
+                const parteIndex = newPartes.findIndex(p => p.parteId === parteId);
+                if (parteIndex > -1) {
+                    newPartes[parteIndex].quantidade += quantidade;
+                } else {
+                    newPartes.push({ parteId, quantidade });
+                }
+                return { ...item, partesDisponiveis: newPartes };
+            }
+            return item;
+        });
+
+        await updateDoc(pedidoRef, { itensProducao: updatedItens });
+        setIsExcessModalOpen(false);
+        refetchAllData();
+        alert("Excedente enviado para montagem com sucesso!");
+
+    } catch (error) {
+        console.error("Erro ao enviar excedente para montagem:", error);
+        alert("Falha ao enviar excedente para montagem.");
+    }
   };
 
   const getFilteredDisplayGroups = (): ProductionGroup[] => {
@@ -1262,12 +1625,8 @@ export default function Producao() {
         return group.status === 'aguardando';
       } else if (activeTab === 'em_producao') {
         return group.status === 'em_producao';
-      } else if (activeTab === 'em_montagem') {
-        return group.status === 'produzido' || group.status === 'em_montagem'; // Groups that are 'produzido' or 'em_montagem' will show here
-      } else if (activeTab === 'montados') {
-        return group.status === 'montado' || group.status === 'concluido';
       }
-      return true;
+      return false; 
     });
   };
 
@@ -1281,87 +1640,111 @@ export default function Producao() {
       return `${localName} ${coords}${division}`;
     });
 
-    // Return unique locations
     return [...new Set(locations)].join('; ');
   };
 
   const canConcludeGroup = (group: ProductionGroup): { canConclude: boolean; message: string | null } => {
-    console.log(`Checking group: ${group.sourceName}, ID: ${group.id}, Current Status: ${group.status}`);
     if (group.status !== 'montado') {
-      console.log(`Group ${group.sourceName} is NOT 'montado'. Status: ${group.status}`);
       return { canConclude: false, message: 'Grupo não está no status "montado".' };
     }
 
     for (const item of group.items) {
-      console.log(`  Checking item: ${item.nome}, Needed: ${item.quantidadePedido}, Current Stock: ${item.estoqueAtualItem}`);
       if ((item.estoqueAtualItem ?? 0) < item.quantidadePedido) {
-        console.log(`  Item ${item.nome} stock is insufficient.`);
         return { canConclude: false, message: `Faltam ${item.quantidadePedido - (item.estoqueAtualItem ?? 0)} unidades de ${item.nome}.` };
       }
     }
-    console.log(`Group ${group.sourceName} is ready to be concluded.`);
     return { canConclude: true, message: null };
   };
 
   const canConcludePedido = (pedido: Pedido): { canConclude: boolean; message: string | null } => {
-    console.log(`Checking pedido: ${pedido.numero}, ID: ${pedido.id}`);
     if (!pedido.productionGroups || pedido.productionGroups.length === 0) {
-      console.log(`Pedido ${pedido.numero} has no production groups.`);
       return { canConclude: false, message: 'Nenhum grupo de produção para este pedido.' };
     }
 
     for (const group of pedido.productionGroups) {
       const { canConclude, message } = canConcludeGroup(group);
       if (!canConclude) {
-        console.log(`Pedido ${pedido.numero} cannot be concluded because group ${group.sourceName} is not ready.`);
         return { canConclude: false, message: `Grupo "${group.sourceName}" não está pronto: ${message}` };
       }
     }
-    console.log(`Pedido ${pedido.numero} is ready to be concluded.`);
     return { canConclude: true, message: null };
+  };
+
+  const handleLaunchPackagingTime = async (pedidoId: string) => {
+    const time = packagingTime[pedidoId];
+    if (!time || time <= 0) {
+      alert("Por favor, insira um tempo de embalagem válido.");
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, 'lancamentoServicos'), {
+        servicoId: 'embalagem', // ou um ID de serviço específico para embalagem
+        pedidoId: pedidoId,
+        quantidade: time / 60, // Convertendo minutos para horas
+        data: Timestamp.now(),
+        usuario: auth.currentUser?.displayName || 'Sistema',
+      });
+      alert("Tempo de embalagem lançado com sucesso!");
+    } catch (error) {
+      console.error("Erro ao lançar tempo de embalagem:", error);
+      alert("Falha ao lançar o tempo de embalagem.");
+    }
   };
 
   const concludePedido = async (pedidoId: string) => {
     try {
       const pedidoToUpdate = pedidos.find(p => p.id === pedidoId);
       if (!pedidoToUpdate) {
-        console.error("Pedido not found in local state:", pedidoId);
+        console.error("Pedido não encontrado no estado local:", pedidoId);
         return;
       }
 
-      const { canConclude, message } = canConcludePedido(pedidoToUpdate);
-      if (!canConclude) {
-        alert(`Não é possível concluir o pedido: ${message}`);
-        return;
+      const batch = writeBatch(db);
+      const pedidoRef = doc(db, 'pedidos', pedidoId);
+
+      // Lançar insumos de embalagem
+      const insumosParaLancar = selectedPackagingInsumos[pedidoId] || [];
+      for (const { insumo, quantidade } of insumosParaLancar) {
+        const lancamentoRef = doc(collection(db, 'lancamentosInsumos'));
+        batch.set(lancamentoRef, {
+          id: uuidv4(),
+          insumoId: insumo.id,
+          tipoInsumo: 'material', // Assuming packaging insumos are 'material' type
+          tipoMovimento: 'saida',
+          quantidade: quantidade,
+          unidadeMedida: 'unidades',
+          detalhes: `Consumo de embalagem para Pedido #${pedidoToUpdate.numero}`,
+          data: Timestamp.now(),
+        });
       }
 
-      const updatedGroups: ProductionGroup[] = (pedidoToUpdate.productionGroups || []).map(group => ({
-        ...group,
+      // Atualizar status do pedido
+      batch.update(pedidoRef, {
         status: 'concluido',
-        completedAt: group.completedAt ?? new Date(),
-      }));
-
-      setPedidos(prevPedidos =>
-        prevPedidos.map(p => (p.id === pedidoId ? { ...p, productionGroups: updatedGroups, status: 'concluido', dataConclusao: new Date() } : p))
-      );
-
-      const cleanedUpdatedGroups = cleanObject(updatedGroups);
-      await updateDoc(doc(db, 'pedidos', pedidoToUpdate.id), {
-        productionGroups: cleanedUpdatedGroups,
-        status: 'concluido',
-        dataConclusao: new Date(),
+        dataConclusao: Timestamp.now(),
       });
 
-      // The debiting of insumos is now handled by updateProductionGroupStatus
-      // when a production group changes status to 'produzido' or 'montado'.
-      // No need to create lancamentosInsumos here.
+      await batch.commit();
 
-      // Re-fetch all data to ensure UI is up-to-date after concluding the pedido
+      // Limpar estado local
+      setSelectedPackagingInsumos(prev => {
+        const newState = { ...prev };
+        delete newState[pedidoId];
+        return newState;
+      });
+      setPackagingTime(prev => {
+        const newState = { ...prev };
+        delete newState[pedidoId];
+        return newState;
+      });
+
       await refetchAllData();
+      alert("Pedido finalizado com sucesso!");
 
     } catch (error) {
-      console.error("Error concluding pedido: ", error);
-      alert("Ocorreu um erro ao tentar concluir o pedido. Verifique o console para mais detalhes.");
+      console.error("Erro ao finalizar o pedido: ", error);
+      alert("Ocorreu um erro ao tentar finalizar o pedido. Verifique o console para mais detalhes.");
     }
   };
 
@@ -1372,7 +1755,6 @@ export default function Producao() {
         Acompanhe e gerencie o fluxo de produção dos pedidos.
       </p>
 
-      {/* Tabs for Production Stages */}
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex space-x-8" aria-label="Tabs">
           <button
@@ -1396,597 +1778,349 @@ export default function Producao() {
             Em Produção
           </button>
           <button
-            onClick={() => setActiveTab('em_montagem')}
+            onClick={() => setActiveTab('em_montagem_peca')}
             className={`${
-              activeTab === 'em_montagem'
+              activeTab === 'em_montagem_peca'
                 ? 'border-blue-500 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
-            Em Montagem
+            Em Montagem - Peça
           </button>
           <button
-            onClick={() => setActiveTab('montados')}
+            onClick={() => setActiveTab('em_montagem_modelo')}
             className={`${
-              activeTab === 'montados'
+              activeTab === 'em_montagem_modelo'
                 ? 'border-blue-500 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
-            Montados
+            Em Montagem - Modelo
+          </button>
+          <button
+            onClick={() => setActiveTab('processando_embalagem')}
+            className={`${
+              activeTab === 'processando_embalagem'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+          >
+            Processando Embalagem
+          </button>
+          <button
+            onClick={() => setActiveTab('finalizados')}
+            className={`${
+              activeTab === 'finalizados'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+          >
+            Finalizados
           </button>
         </nav>
       </div>
 
-      {/* Content based on active tab */}
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-6">
         {activeTab === 'aguardando' && (
-          pedidos.filter(pedido => pedido.productionGroups?.some(group => group.status === 'aguardando')).length > 0 ? (
-            pedidos.filter(pedido => pedido.productionGroups?.some(group => group.status === 'aguardando')).map((pedido) => (
-              <div key={pedido.id} className="bg-white shadow rounded-lg p-6">
-                {/* Main Pedido Card Content */}
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-xl font-bold text-gray-900">Pedido #{pedido.numero}</h3>
-                  <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
-                    pedido.status === 'aguardando' ? 'bg-yellow-100 text-yellow-800' :
-                    'bg-gray-100 text-gray-800'
-                  }`}>
-                    {pedido.status?.replace('_', ' ')}
-                  </span>
-                </div>
-                <p className="text-gray-600 mb-2">Comprador: {pedido.comprador}</p>
-                <div className="grid grid-cols-2 gap-2 text-sm text-gray-700 mb-4">
-                  <div className="flex items-center">
-                    <Hourglass className="h-4 w-4 mr-1 text-blue-500" />
-                    <span>Impressão Total: {formatTime(pedido.tempos?.impressao || 0)}</span>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">
+            {Array.from(optimizedGroups.values()).length > 0 ? (
+              Array.from(optimizedGroups.values()).map((group) => (
+                <div key={group.id} className={`bg-white shadow rounded-lg p-6 border-2 ${group.pedidosOrigem.length > 1 ? 'border-green-400' : 'border-transparent'}`}>
+                  <div className="flex justify-between items-center mb-2">
+                    <h3 className="text-xl font-bold text-gray-900">{group.sourceName}</h3>
+                    {group.pedidosOrigem.length > 1 && (
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                        <Users className="h-4 w-4 mr-1" />
+                        Otimizado ({group.pedidosOrigem.length} pedidos)
+                      </span>
+                    )}
                   </div>
-                  <div className="flex items-center">
-                    <Package className="h-4 w-4 mr-1 text-green-500" />
-                    <span>Filamento Total: {formatFilament(pedido.tempos?.totalConsumoFilamento || 0)}</span>
-                  </div>
-                  <div className="flex items-center">
-                    <Package className="h-4 w-4 mr-1 text-purple-500" />
-                    <span>Montagem Total: {formatTime(pedido.tempos?.montagem || 0)}</span>
-                  </div>
-                </div>
-
-                <h4 className="text-lg font-semibold text-gray-800 mb-3">Grupos de Impressão:</h4>
-                <div className="space-y-4">
-                  {pedido.productionGroups?.filter(group => group.status === 'aguardando').map((group) => (
-                    <div key={group.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                      {/* Inner Group Card Content - This is the "gray element" */}
-                      <div className="flex justify-between items-center mb-2">
-                        <h5 className="text-md font-medium text-gray-800">
-                          {group.sourceType === 'peca' && `Peça: ${group.sourceName || 'N/A'}`}
-                          {group.sourceType === 'modelo' && `Modelo: ${group.sourceName || 'N/A'}`}
-                          {group.sourceType === 'kit' && `Kit: ${group.sourceName || 'N/A'}`}
-                        </h5>
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          group.status === 'aguardando' ? 'bg-yellow-100 text-yellow-800' :
-                          'bg-gray-100 text-gray-800'
-                        }`}>
-                          {group.status?.replace('_', ' ')}
-                        </span>
-                      </div>
-                      <div className="text-sm text-gray-700 mb-2">
-                        <p>Tempo de Impressão: {formatTime(group.tempoImpressaoGrupo)}</p>
-                        <div className="flex items-center">
-                          Filamento:
-                          {group.corFilamento && (
-                            <Spool
-                              className="h-4 w-4 ml-1"
-                              style={{ color: filamentColors[group.corFilamento] || 'currentColor' }}
-                            />
-                          )}
-                        </div>
-                        {group.filamentosNecessarios.map((filamento, idx) => (
-                          <div key={idx}>
-                            <p className={(filamento.estoqueAtualFilamento ?? 0) < filamento.quantidade ? 'text-red-500' : ''}>
-                              {filamento.nome}: Necessário {formatFilament(filamento.quantidade)} / Estoque {formatFilament(filamento.estoqueAtualFilamento ?? 0)}
-                            </p>
-                            {filamento.localEstoqueFilamento && filamento.localEstoqueFilamento.length > 0 && (
-                              <p className="flex items-center text-xs text-gray-500">
-                                <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(filamento.localEstoqueFilamento)}
-                              </p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                      {group.outrosInsumosNecessarios && group.outrosInsumosNecessarios.length > 0 && (
-                        <div className="text-sm text-gray-700 mb-2">
-                          <h6 className="text-md font-medium text-gray-800 mb-1">Outros Insumos Necessários:</h6>
-                          {group.outrosInsumosNecessarios.map((insumo, idx) => (
-                            <div key={idx}>
-                              <p className={(insumo.estoqueAtualInsumo ?? 0) < insumo.quantidade ? 'text-red-500' : ''}>
-                                {insumo.nome} ({insumo.tipo}): Necessário {insumo.quantidade} / Estoque {insumo.estoqueAtualInsumo ?? 0}
-                              </p>
-                              {insumo.localEstoqueInsumo && insumo.localEstoqueInsumo.length > 0 && (
-                                <p className="flex items-center text-xs text-gray-500">
-                                  <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(insumo.localEstoqueInsumo)}
-                                </p>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <h6 className="text-md font-medium text-gray-800 mb-1">Itens a Produzir:</h6>
-                      <ul className="list-disc list-inside text-sm text-gray-600 mb-3">
-                        {group.items.map((item, itemIndex) => (
-                          <li key={itemIndex}>
-                            {item.nome} (x{item.quantidadePedido})
-                            <p className={(item.estoqueAtualItem ?? 0) < item.quantidadePedido ? 'text-red-500' : ''}>
-                              Estoque Atual: {item.estoqueAtualItem ?? 0}
-                            </p>
-                            {item.localEstoqueItem && item.localEstoqueItem.length > 0 && (
-                              <p className="flex items-center text-xs text-gray-500">
-                                <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(item.localEstoqueItem)}
-                              </p>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                      {(() => {
-                        const stockStatus = getGroupStockStatus(group);
-                        if (stockStatus === 'full_stock') {
-                          return (
-                            <button
-                              onClick={() => handleDebitStock(group.pedidoId, group.id, 'full')}
-                              className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700"
-                            >
-                              <Package className="h-3 w-3 mr-1" /> Usar Estoque Existente
-                            </button>
-                          );
-                        } else if (stockStatus === 'partial_stock') {
-                          return (
-                            <>
-                              <button
-                                onClick={() => handleDebitStock(group.pedidoId, group.id, 'available')}
-                                className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-yellow-600 hover:bg-yellow-700"
-                              >
-                                <Package className="h-3 w-3 mr-1" /> Usar Estoque Disponível e Iniciar Produção
-                              </button>
-                              <button
-                                onClick={() => updateProductionGroupStatus(group.pedidoId, group.id, 'em_producao')}
-                                className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
-                              >
-                                <Play className="h-3 w-3 mr-1" /> Apenas Iniciar Produção
-                              </button>
-                            </>
-                          );
-                        } else { // no_stock
-                          return (
-                            <button
-                              onClick={() => updateProductionGroupStatus(group.pedidoId, group.id, 'em_producao')}
-                              className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
-                            >
-                              <Play className="h-3 w-3 mr-1" /> Iniciar Produção
-                            </button>
-                          );
-                        }
-                      })()}
+                  <p className="text-gray-600 mb-2">Total a produzir: {group.totalPartsQuantity}</p>
+                  <div className="text-sm text-gray-700 mb-4">
+                    <div className="flex items-center">
+                      <Hourglass className="h-4 w-4 mr-1 text-blue-500" />
+                      <span>Impressão Total: {formatTime(group.tempoImpressaoGrupo || 0)}</span>
                     </div>
-                  ))}
+                  </div>
+                  <h4 className="text-lg font-semibold text-gray-800 mb-3">Detalhes do Grupo:</h4>
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <h5 className="font-semibold">Pedidos:</h5>
+                      <p className="text-gray-600">{[...new Set(group.pedidosOrigem.map(p => `#${p.pedidoNumero}`))].join(', ')}</p>
+                    </div>
+                    <div>
+                      <h5 className="font-semibold">Partes no Grupo:</h5>
+                      <ul className="list-disc list-inside text-gray-600">
+                        {Object.entries(group.partesNoGrupo).map(([parteId, parteInfo]) => {
+                          const temEstoque = (parteInfo.estoqueAtual || 0) >= (parteInfo.quantidadeNecessaria || 0);
+                          return (
+                            <li key={parteId} className={!temEstoque ? 'text-red-500' : ''}>
+                              {parteInfo.nome} (x{parteInfo.quantidade}) - Estoque: {parteInfo.estoqueAtual || 0}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                    <div>
+                      <h5 className="font-semibold">Insumos Necessários:</h5>
+                      <ul className="list-disc list-inside text-gray-600">
+                        {group.filamentosNecessarios.map((f, i) => {
+                          const temEstoque = (f.estoqueAtual || 0) >= (f.quantidadeNecessaria || 0);
+                          return <li key={`f-${i}`} className={!temEstoque ? 'text-red-500' : ''}>{f.nome}: {(f.quantidadeNecessaria || 0).toFixed(2)}g (Estoque: {(f.estoqueAtual || 0).toFixed(2)}g)</li>
+                        })}
+                        {group.outrosInsumosNecessarios.map((insumo, i) => {
+                          const temEstoque = (insumo.estoqueAtual || 0) >= (insumo.quantidadeNecessaria || 0);
+                          return <li key={`i-${i}`} className={!temEstoque ? 'text-red-500' : ''}>{insumo.nome}: {insumo.quantidadeNecessaria} (Estoque: {insumo.estoqueAtual || 0})</li>
+                        })}
+                      </ul>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleStartOptimizedProduction(group)}
+                    disabled={!group.insumosProntos && !group.partesProntas}
+                    className="w-full mt-4 inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                  >
+                    <Play className="h-5 w-5 mr-2" /> Iniciar Produção
+                  </button>
+                  {!group.insumosProntos && <p className="text-xs text-center text-red-600 mt-2">Produção bloqueada por falta de insumos.</p>}
                 </div>
+              ))
+            ) : (
+              <div className="text-center py-12 col-span-full">
+                <p className="text-gray-600">Nenhum grupo de impressão aguardando otimização.</p>
               </div>
-            ))
-          ) : (
-            <div className="text-center py-12 col-span-full">
-              <p className="text-gray-600">Nenhum pedido aguardando encontrado.</p>
-            </div>
-          )
+            )}
+          </div>
         )}
 
         {activeTab === 'em_producao' && (
-          pedidos.filter(pedido => pedido.productionGroups?.some(group => group.status === 'em_producao')).length > 0 ? (
-            pedidos.filter(pedido => pedido.productionGroups?.some(group => group.status === 'em_producao')).map((pedido) => (
-              <div key={pedido.id} className="bg-white shadow rounded-lg p-6">
-                {/* Main Pedido Card Content */}
-                <div className="flex justify-between items-center mb-4">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">
+            {pedidos.filter(pedido => pedido.productionGroups?.some(group => group.status === 'em_producao')).length > 0 ? (
+              pedidos.filter(pedido => pedido.productionGroups?.some(group => group.status === 'em_producao')).map((pedido) => (
+                <div key={pedido.id} className="bg-white shadow rounded-lg p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xl font-bold text-gray-900">Pedido #{pedido.numero}</h3>
+                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800`}>
+                      Em Produção
+                    </span>
+                  </div>
+                  <p className="text-gray-600 mb-2">Comprador: {pedido.comprador}</p>
+                  <div className="grid grid-cols-2 gap-2 text-sm text-gray-700 mb-4">
+                    <div className="flex items-center">
+                      <Hourglass className="h-4 w-4 mr-1 text-blue-500" />
+                      <span>Impressão Total: {formatTime(pedido.tempos?.impressao || 0)}</span>
+                    </div>
+                    <div className="flex items-center">
+                      <Package className="h-4 w-4 mr-1 text-green-500" />
+                      <span>Filamento Total: {formatFilament(pedido.tempos?.totalConsumoFilamento || 0)}</span>
+                    </div>
+                    <div className="flex items-center">
+                      <Package className="h-4 w-4 mr-1 text-purple-500" />
+                      <span>Montagem Total: {formatTime(pedido.tempos?.montagem || 0)}</span>
+                    </div>
+                  </div>
+                  <h4 className="text-lg font-semibold text-gray-800 mb-3">Grupos de Impressão:</h4>
+                  <div className="space-y-4">
+                    {pedido.productionGroups?.filter(group => group.status === 'em_producao').map((group) => (
+                      <div key={group.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                        <div className="flex justify-between items-center mb-2">
+                          <h5 className="text-md font-medium text-gray-800">{group.sourceName}</h5>
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800`}>
+                            Em Produção
+                          </span>
+                        </div>
+                        <div className="text-sm text-gray-700 mb-2">
+                          <p>Tempo de Impressão: {formatTime(group.tempoImpressaoGrupo)}</p>
+                          <div className="flex items-center">
+                            Filamento:
+                            {group.corFilamento && (
+                              <Spool className="h-4 w-4 ml-1" style={{ color: filamentColors[group.corFilamento] || 'currentColor' }} />
+                            )}
+                          </div>
+                          {group.filamentosNecessarios.map((filamento, idx) => (
+                            <div key={idx}>
+                              <p className={(filamento.estoqueAtualFilamento ?? 0) < filamento.quantidade ? 'text-red-500' : ''}>
+                                {filamento.nome}: Necessário {formatFilament(filamento.quantidade)} / Estoque {formatFilament(filamento.estoqueAtualFilamento ?? 0)}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        <h6 className="text-md font-medium text-gray-800 mb-1">Itens a Produzir:</h6>
+                        <ul className="list-disc list-inside text-sm text-gray-600 mb-3">
+                          {group.items.map((item, itemIndex) => (
+                            <li key={itemIndex}>{item.nome} (x{item.quantidadePedido})</li>
+                          ))}
+                        </ul>
+                        <div className="flex space-x-2">
+                          <button onClick={() => revertProductionGroupStatus(group.pedidoId, group.id, 'em_producao')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700">
+                            <XCircle className="h-3 w-3 mr-1" /> Reverter
+                          </button>
+                          <button onClick={() => updateProductionGroupStatus(group.pedidoId, group.id, 'aguardando')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-orange-600 hover:bg-orange-700">
+                            <Pause className="h-3 w-3 mr-1" /> Pausar
+                          </button>
+                          <button onClick={() => handleConcluirImpressao(group)} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
+                            <CheckCircle className="h-3 w-3 mr-1" /> Concluir Impressão
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="text-center py-12 col-span-full">
+                <p className="text-gray-600">Nenhum pedido em produção encontrado.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'em_montagem_peca' && (
+          <div className="space-y-6">
+            {pedidos.filter(p => p.itensProducao?.some(item => item.status === 'em_montagem_pecas')).length > 0 ? (
+              pedidos.filter(p => p.itensProducao?.some(item => item.status === 'em_montagem_pecas')).map(pedido => (
+                <div key={pedido.id} className="bg-white shadow rounded-lg p-6">
                   <h3 className="text-xl font-bold text-gray-900">Pedido #{pedido.numero}</h3>
-                  <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
-                    pedido.status === 'em_producao' ? 'bg-blue-100 text-blue-800' :
-                    'bg-gray-100 text-gray-800'
-                  }`}>
-                    {pedido.status?.replace('_', ' ')}
-                  </span>
-                </div>
-                <p className="text-gray-600 mb-2">Comprador: {pedido.comprador}</p>
-                <div className="grid grid-cols-2 gap-2 text-sm text-gray-700 mb-4">
-                  <div className="flex items-center">
-                    <Hourglass className="h-4 w-4 mr-1 text-blue-500" />
-                    <span>Impressão Total: {formatTime(pedido.tempos?.impressao || 0)}</span>
-                  </div>
-                  <div className="flex items-center">
-                    <Package className="h-4 w-4 mr-1 text-green-500" />
-                    <span>Filamento Total: {formatFilament(pedido.tempos?.totalConsumoFilamento || 0)}</span>
-                  </div>
-                  <div className="flex items-center">
-                    <Package className="h-4 w-4 mr-1 text-purple-500" />
-                    <span>Montagem Total: {formatTime(pedido.tempos?.montagem || 0)}</span>
-                  </div>
-                </div>
-
-                <h4 className="text-lg font-semibold text-gray-800 mb-3">Grupos de Impressão:</h4>
-                <div className="space-y-4">
-                  {pedido.productionGroups?.filter(group => group.status === 'em_producao').map((group) => (
-                    <div key={group.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                      {/* Inner Group Card Content */}
-                      <div className="flex justify-between items-center mb-2">
-                        <h5 className="text-md font-medium text-gray-800">
-                          {group.sourceType === 'peca' && `Peça: ${group.sourceName || 'N/A'}`}
-                          {group.sourceType === 'modelo' && `Modelo: ${group.sourceName || 'N/A'}`}
-                          {group.sourceType === 'kit' && `Kit: ${group.sourceName || 'N/A'}`}
-                        </h5>
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          group.status === 'em_producao' ? 'bg-blue-100 text-blue-800' :
-                          'bg-gray-100 text-gray-800'
-                        }`}>
-                          {group.status?.replace('_', ' ')}
-                        </span>
-                      </div>
-                      <div className="text-sm text-gray-700 mb-2">
-                        <p>Tempo de Impressão: {formatTime(group.tempoImpressaoGrupo)}</p>
-                        <div className="flex items-center">
-                          Filamento:
-                          {group.corFilamento && (
-                            <Spool
-                              className="h-4 w-4 ml-1"
-                              style={{ color: filamentColors[group.corFilamento] || 'currentColor' }}
-                            />
-                          )}
-                        </div>
-                        {group.filamentosNecessarios.map((filamento, idx) => (
-                          <div key={idx}>
-                            <p className={(filamento.estoqueAtualFilamento ?? 0) < filamento.quantidade ? 'text-red-500' : ''}>
-                              {filamento.nome}: Necessário {formatFilament(filamento.quantidade)} / Estoque {formatFilament(filamento.estoqueAtualFilamento ?? 0)}
-                            </p>
-                            {filamento.localEstoqueFilamento && filamento.localEstoqueFilamento.length > 0 && (
-                              <p className="flex items-center text-xs text-gray-500">
-                                <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(filamento.localEstoqueFilamento)}
-                              </p>
-                            )}
+                  {pedido.itensProducao?.filter(item => item.status === 'em_montagem_pecas').map(itemProducao => {
+                      const peca = availablePecas.find(p => p.id === itemProducao.refId);
+                      const canConclude = peca?.gruposImpressao.flatMap(gi => gi.partes).every(parte => {
+                          const disponivel = itemProducao.partesDisponiveis?.find(pd => pd.parteId === parte.parteId)?.quantidade || 0;
+                          const necessaria = parte.quantidade * itemProducao.quantidade;
+                          return disponivel >= necessaria;
+                      });
+                      return (
+                          <div key={itemProducao.id} className="border border-gray-200 rounded-lg p-3 mt-4 bg-gray-50">
+                              <h5 className="text-md font-medium text-gray-800">Peça: {peca?.nome} (x{itemProducao.quantidade})</h5>
+                              <h6 className="text-sm font-semibold mt-2">Partes Necessárias:</h6>
+                              <ul className="list-disc list-inside text-sm">
+                                  {peca?.gruposImpressao.flatMap(gi => gi.partes).map(parte => {
+                                      const disponivel = itemProducao.partesDisponiveis?.find(pd => pd.parteId === parte.parteId)?.quantidade || 0;
+                                      const necessaria = parte.quantidade * itemProducao.quantidade;
+                                      return (
+                                          <li key={parte.parteId} className={disponivel < necessaria ? 'text-red-500' : 'text-green-600'}>
+                                              {availablePartes.find(p => p.id === parte.parteId)?.nome}: {disponivel} / {necessaria}
+                                          </li>
+                                      )
+                                  })}
+                              </ul>
+                              <button disabled={!canConclude} className="mt-2 inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400">
+                                  <CheckCircle className="h-3 w-3 mr-1" /> Concluir Montagem de Peça
+                              </button>
                           </div>
-                        ))}
-                      </div>
-                      <h6 className="text-md font-medium text-gray-800 mb-1">Itens a Produzir:</h6>
-                      <ul className="list-disc list-inside text-sm text-gray-600 mb-3">
-                        {group.items.map((item, itemIndex) => (
-                          <li key={itemIndex}>
-                            {item.nome} (x{item.quantidadePedido})
-                            <p className={(item.estoqueAtualItem ?? 0) < item.quantidadePedido ? 'text-red-500' : ''}>
-                              Estoque Atual: {item.estoqueAtualItem ?? 0}
-                            </p>
-                            {item.localEstoqueItem && item.localEstoqueItem.length > 0 && (
-                              <p className="flex items-center text-xs text-gray-500">
-                                <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(item.localEstoqueItem)}
-                              </p>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => revertProductionGroupStatus(group.pedidoId, group.id, 'em_producao')}
-                          className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700"
-                        >
-                          <XCircle className="h-3 w-3 mr-1" /> Reverter
-                        </button>
-                        <button
-                          onClick={() => updateProductionGroupStatus(group.pedidoId, group.id, 'aguardando')}
-                          className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-orange-600 hover:bg-orange-700"
-                        >
-                          <Pause className="h-3 w-3 mr-1" /> Pausar
-                        </button>
-                        <button
-                          onClick={() => handleOpenLaunchModal(group)}
-                          className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
-                        >
-                          <FastForward className="h-3 w-3 mr-1" /> Concluir Produção
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                      )
+                  })}
                 </div>
+              ))
+            ) : (
+              <div className="text-center py-12 col-span-full">
+                <p className="text-gray-600">Nenhuma peça aguardando montagem.</p>
               </div>
-            ))
-          ) : (
-            <div className="text-center py-12 col-span-full">
-              <p className="text-gray-600">Nenhum pedido em produção encontrado.</p>
-            </div>
-          )
+            )}
+          </div>
         )}
 
-        {activeTab === 'em_montagem' && (
-          (() => {
-            const assemblyGroups = getFilteredDisplayGroups().filter(group => group.status === 'produzido' || group.status === 'em_montagem');
-            const uniquePedidoIds = [...new Set(assemblyGroups.map(group => group.pedidoId))];
+        {activeTab === 'em_montagem_modelo' && (
+          <div className="text-center py-12 col-span-full">
+            <p className="text-gray-600">WIP: Área para montagem de modelos.</p>
+          </div>
+        )}
 
-            return uniquePedidoIds.length > 0 ? (
-              uniquePedidoIds.map(pedidoId => {
-                const pedido = pedidos.find(p => p.id === pedidoId);
-                if (!pedido) return null;
-
-                const groupsForThisPedido = assemblyGroups.filter(group => group.pedidoId === pedido.id);
-
-                return (
-                  <div key={pedido.id} className="bg-white shadow rounded-lg p-6">
-                    {/* Main Pedido Card Content */}
-                    <div className="flex justify-between items-center mb-4">
-                      <h3 className="text-xl font-bold text-gray-900">Pedido #{pedido.numero}</h3>
-                      <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
-                        groupsForThisPedido.every(g => g.status === 'produzido') ? 'bg-green-100 text-green-800' :
-                        groupsForThisPedido.every(g => g.status === 'em_montagem') ? 'bg-orange-100 text-orange-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
-                        {groupsForThisPedido.every(g => g.status === 'produzido') ? 'Produzido' :
-                         groupsForThisPedido.every(g => g.status === 'em_montagem') ? 'Em Montagem' : 'Misto'}
-                      </span>
-                    </div>
-                    <p className="text-gray-600 mb-2">Comprador: {pedido.comprador}</p>
-                    <div className="grid grid-cols-2 gap-2 text-sm text-gray-700 mb-4">
-                      <div className="flex items-center">
-                        <Hourglass className="h-4 w-4 mr-1 text-blue-500" />
-                        <span>Impressão Total: {formatTime(pedido.tempos?.impressao || 0)}</span>
-                      </div>
-                      <div className="flex items-center">
-                        <Package className="h-4 w-4 mr-1 text-green-500" />
-                        <span>Filamento Total: {formatFilament(pedido.tempos?.totalConsumoFilamento || 0)}</span>
-                      </div>
-                      <div className="flex items-center">
-                        <Package className="h-4 w-4 mr-1 text-purple-500" />
-                        <span>Montagem Total: {formatTime(pedido.tempos?.montagem || 0)}</span>
-                      </div>
-                    </div>
-
-                    <h4 className="text-lg font-semibold text-gray-800 mb-3">Grupos de Impressão:</h4>
-                    <div className="space-y-4">
-                      {groupsForThisPedido.map((group) => (
-                        <div key={group.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                          {/* Inner Group Card Content */}
-                          <div className="flex justify-between items-center mb-2">
-                            <h5 className="text-md font-medium text-gray-800">
-                              {group.sourceType === 'peca' && `Peça: ${group.sourceName || 'N/A'}`}
-                              {group.sourceType === 'modelo' && `Modelo: ${group.sourceName || 'N/A'}`}
-                              {group.sourceType === 'kit' && `Kit: ${group.sourceName || 'N/A'}`}
-                            </h5>
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                              group.status === 'produzido' ? 'bg-green-100 text-green-800' :
-                              group.status === 'em_montagem' ? 'bg-orange-100 text-orange-800' :
-                              'bg-gray-100 text-gray-800'
-                            }`}>
-                              {group.status?.replace('_', ' ')}
-                            </span>
-                          </div>
-                          <div className="text-sm text-gray-700 mb-2">
-                            <p>Tempo de Impressão: {formatTime(group.tempoImpressaoGrupo)}</p>
-                            <div className="flex items-center">
-                              Filamento:
-                              {group.corFilamento && (
-                                <Spool
-                                  className="h-4 w-4 ml-1"
-                                  style={{ color: filamentColors[group.corFilamento] || 'currentColor' }}
-                                />
-                              )}
-                            </div>
-                            {group.filamentosNecessarios.map((filamento, idx) => (
-                              <div key={idx}>
-                                <p className={(filamento.estoqueAtualFilamento ?? 0) < filamento.quantidade ? 'text-red-500' : ''}>
-                                  {filamento.nome}: Necessário {formatFilament(filamento.quantidade)} / Estoque {formatFilament(filamento.estoqueAtualFilamento ?? 0)}
-                                </p>
-                                {filamento.localEstoqueFilamento && filamento.localEstoqueFilamento.length > 0 && (
-                                  <p className="flex items-center text-xs text-gray-500">
-                                    <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(filamento.localEstoqueFilamento)}
-                                  </p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                          {group.outrosInsumosNecessarios && group.outrosInsumosNecessarios.length > 0 && (
-                            <div className="text-sm text-gray-700 mb-2">
-                              <h6 className="text-md font-medium text-gray-800 mb-1">Outros Insumos Necessários:</h6>
-                              {group.outrosInsumosNecessarios.map((insumo, idx) => (
-                                <div key={idx}>
-                                  <p className={(insumo.estoqueAtualInsumo ?? 0) < insumo.quantidade ? 'text-red-500' : ''}>
-                                    {insumo.nome} ({insumo.tipo}): Necessário {insumo.quantidade} / Estoque {insumo.estoqueAtualInsumo ?? 0}
-                                  </p>
-                                  {insumo.localEstoqueInsumo && insumo.localEstoqueInsumo.length > 0 && (
-                                    <p className="flex items-center text-xs text-gray-500">
-                                      <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(insumo.localEstoqueInsumo)}
-                                    </p>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          <h6 className="text-md font-medium text-gray-800 mb-1">Itens Produzidos:</h6>
-                          <ul className="list-disc list-inside text-sm text-gray-600 mb-3">
-                            {group.items.map((item, itemIndex) => (
-                              <li key={itemIndex}>
-                                {item.nome} (x{item.quantidadePedido})
-                                <p className={(item.estoqueAtualItem ?? 0) < item.quantidadePedido ? 'text-red-500' : ''}>
-                                  Estoque Atual: {item.estoqueAtualItem ?? 0}
-                                </p>
-                                {item.localEstoqueItem && item.localEstoqueItem.length > 0 && (
-                                  <p className="flex items-center text-xs text-gray-500">
-                                    <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(item.localEstoqueItem)}
-                                  </p>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                          <div className="flex space-x-2">
-                            <button
-                              onClick={() => updateProductionGroupStatus(group.pedidoId, group.id, 'montado')}
-                              className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700"
-                            >
-                              <CheckCircle className="h-3 w-3 mr-1" /> Concluir Montagem
-                            </button>
-                          </div>
-                        </div>
+        {activeTab === 'processando_embalagem' && (
+          <div className="space-y-6">
+            {pedidos.filter(p => p.itensProducao?.some(item => item.status === 'processando_embalagem')).length > 0 ? (
+              pedidos.filter(p => p.itensProducao?.some(item => item.status === 'processando_embalagem')).map(pedido => (
+                <div key={pedido.id} className="bg-white shadow rounded-lg p-6">
+                  <div className="flex justify-between items-center">
+                    <h3 className="text-xl font-bold text-gray-900">Pedido #{pedido.numero}</h3>
+                    <button
+                      onClick={() => concludePedido(pedido.id)}
+                      className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
+                    >
+                      <CheckCircle className="h-5 w-5 mr-2" /> Finalizar Pedido
+                    </button>
+                  </div>
+                  <div className="mt-4">
+                    <h4 className="text-lg font-semibold">Itens para Embalagem:</h4>
+                    <ul className="list-disc list-inside">
+                      {pedido.itensProducao?.filter(item => item.status === 'processando_embalagem').map(item => {
+                        const produto = availablePecas.find(p => p.id === item.refId) || availableModels.find(m => m.id === item.refId) || availableKits.find(k => k.id === item.refId);
+                        return <li key={item.id}>{produto?.nome} (x{item.quantidade})</li>;
+                      })}
+                    </ul>
+                  </div>
+                  <div className="mt-4">
+                    <button
+                      onClick={() => {
+                        setSelectedPedidoForPackaging(pedido);
+                        setIsPackagingInsumoModalOpen(true);
+                      }}
+                      className="inline-flex items-center px-3 py-1 border border-dashed text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200"
+                    >
+                      <PlusCircle className="h-4 w-4 mr-2" /> Adicionar Insumo de Embalagem
+                    </button>
+                    <div className="mt-2">
+                      {selectedPackagingInsumos[pedido.id]?.map(({ insumo, quantidade }) => (
+                        <div key={insumo.id} className="text-sm">{insumo.nome}: {quantidade}</div>
                       ))}
                     </div>
                   </div>
-                );
-              })
-            ) : (
-              <div className="text-center py-12 col-span-full">
-                <p className="text-gray-600">Nenhum pedido em montagem encontrado.</p>
-              </div>
-            );
-          })()
-        )}
-
-        {activeTab === 'montados' && (
-          (() => {
-            const mountedGroups = getFilteredDisplayGroups().filter(group => group.status === 'montado' || group.status === 'concluido');
-            const uniquePedidoIds = [...new Set(mountedGroups.map(group => group.pedidoId))];
-
-            return uniquePedidoIds.length > 0 ? (
-              uniquePedidoIds.map(pedidoId => {
-                const pedido = pedidos.find(p => p.id === pedidoId);
-                if (!pedido) return null;
-
-                const groupsForThisPedido = mountedGroups.filter(group => group.pedidoId === pedido.id);
-
-                return (
-                  <div key={pedido.id} className="bg-white shadow rounded-lg p-6">
-                    {/* Main Pedido Card Content */}
-                    <div className="flex justify-between items-center mb-4">
-                      <h3 className="text-xl font-bold text-gray-900">Pedido #{pedido.numero}</h3>
-                      <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
-                        groupsForThisPedido.every(g => g.status === 'montado') ? 'bg-purple-100 text-purple-800' :
-                        groupsForThisPedido.every(g => g.status === 'concluido') ? 'bg-blue-100 text-blue-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
-                        {groupsForThisPedido.every(g => g.status === 'montado') ? 'Montado' :
-                         groupsForThisPedido.every(g => g.status === 'concluido') ? 'Concluído' : 'Misto'}
-                      </span>
-                    </div>
-                    <p className="text-gray-600 mb-2">Comprador: {pedido.comprador}</p>
-                    <div className="grid grid-cols-2 gap-2 text-sm text-gray-700 mb-4">
-                      <div className="flex items-center">
-                        <Hourglass className="h-4 w-4 mr-1 text-blue-500" />
-                        <span>Impressão Total: {formatTime(pedido.tempos?.impressao || 0)}</span>
-                      </div>
-                      <div className="flex items-center">
-                        <Package className="h-4 w-4 mr-1 text-green-500" />
-                        <span>Filamento Total: {formatFilament(pedido.tempos?.totalConsumoFilamento || 0)}</span>
-                      </div>
-                      <div className="flex items-center">
-                        <Package className="h-4 w-4 mr-1 text-purple-500" />
-                        <span>Montagem Total: {formatTime(pedido.tempos?.montagem || 0)}</span>
-                      </div>
-                    </div>
-
-                    <h4 className="text-lg font-semibold text-gray-800 mb-3">Grupos de Impressão:</h4>
-                    <div className="space-y-4">
-                      {groupsForThisPedido.map((group) => (
-                        <div key={group.id} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                          {/* Inner Group Card Content */}
-                          <div className="flex justify-between items-center mb-2">
-                            <h5 className="text-md font-medium text-gray-800">
-                              {group.sourceType === 'peca' && `Peça: ${group.sourceName || 'N/A'}`}
-                              {group.sourceType === 'modelo' && `Modelo: ${group.sourceName || 'N/A'}`}
-                              {group.sourceType === 'kit' && `Kit: ${group.sourceName || 'N/A'}`}
-                            </h5>
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                              group.status === 'montado' ? 'bg-purple-100 text-purple-800' :
-                              group.status === 'concluido' ? 'bg-blue-100 text-blue-800' :
-                              'bg-gray-100 text-gray-800'
-                            }`}>
-                              {group.status?.replace('_', ' ')}
-                            </span>
-                          </div>
-                          <div className="text-sm text-gray-700 mb-2">
-                            <p>Tempo de Impressão: {formatTime(group.tempoImpressaoGrupo)}</p>
-                            <div className="flex items-center">
-                              Filamento:
-                              {group.corFilamento && (
-                                <Spool
-                                  className="h-4 w-4 ml-1"
-                                  style={{ color: filamentColors[group.corFilamento] || 'currentColor' }}
-                                />
-                              )}
-                            </div>
-                            {group.filamentosNecessarios.map((filamento, idx) => (
-                              <div key={idx}>
-                                <p className={(filamento.estoqueAtualFilamento ?? 0) < filamento.quantidade ? 'text-red-500' : ''}>
-                                  {filamento.nome}: Necessário {formatFilament(filamento.quantidade)} / Estoque {formatFilament(filamento.estoqueAtualFilamento ?? 0)}
-                                </p>
-                                {filamento.localEstoqueFilamento && filamento.localEstoqueFilamento.length > 0 && (
-                                  <p className="flex items-center text-xs text-gray-500">
-                                    <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(filamento.localEstoqueFilamento)}
-                                  </p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                          <h6 className="text-md font-medium text-gray-800 mb-1">Itens Montados:</h6>
-                          <ul className="list-disc list-inside text-sm text-gray-600 mb-3">
-                            {group.items.map((item, itemIndex) => (
-                              <li key={itemIndex}>
-                                {item.nome} (x{item.quantidadePedido})
-                                <p className={(item.estoqueAtualItem ?? 0) < item.quantidadePedido ? 'text-red-500' : ''}>
-                                  Estoque Atual: {item.estoqueAtualItem ?? 0}
-                                </p>
-                                {item.localEstoqueItem && item.localEstoqueItem.length > 0 && (
-                                  <p className="flex items-center text-xs text-gray-500">
-                                    <MapPin className="h-3 w-3 mr-1" /> Local: {formatLocation(item.localEstoqueItem)}
-                                  </p>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                          <div className="flex space-x-2">
-                            <button
-                              onClick={() => revertProductionGroupStatus(group.pedidoId, group.id, group.status)}
-                              className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700"
-                            >
-                              <XCircle className="h-3 w-3 mr-1" /> Reverter
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {/* Conclude Pedido Button */}
-                    <div className="mt-4 flex justify-end">
-                      {(() => {
-                        const { canConclude, message } = canConcludePedido(pedido);
-                        return (
-                          <>
-                            {!canConclude && message && (
-                              <p className="text-red-500 text-sm mr-4 self-center">{message}</p>
-                            )}
-                            <button
-                              onClick={() => concludePedido(pedido.id)}
-                              disabled={!canConclude}
-                              className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white ${
-                                canConclude ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed'
-                              }`}
-                            >
-                              <CheckCircle className="h-4 w-4 mr-2" /> Concluir Pedido
-                            </button>
-                          </>
-                        );
-                      })()}
+                  <div className="mt-4">
+                    <label htmlFor={`packaging-time-${pedido.id}`} className="block text-sm font-medium text-gray-700">
+                      Tempo de Embalagem (minutos)
+                    </label>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="number"
+                        id={`packaging-time-${pedido.id}`}
+                        value={packagingTime[pedido.id] || ''}
+                        onChange={(e) => setPackagingTime({ ...packagingTime, [pedido.id]: Number(e.target.value) })}
+                        className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                      />
+                      <button
+                        onClick={() => handleLaunchPackagingTime(pedido.id)}
+                        className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
+                      >
+                        Lançar Tempo
+                      </button>
                     </div>
                   </div>
-                );
-              })
+                </div>
+              ))
             ) : (
               <div className="text-center py-12 col-span-full">
-                <p className="text-gray-600">Nenhum pedido montado encontrado.</p>
+                <p className="text-gray-600">Nenhum item aguardando embalagem.</p>
               </div>
-            );
-          })()
+            )}
+          </div>
+        )}
+
+        {activeTab === 'finalizados' && (
+          <div className="text-center py-12 col-span-full">
+            <p className="text-gray-600">WIP: Área para itens finalizados.</p>
+          </div>
         )}
       </div>
+
       <ProductionLaunchModal
         isOpen={isLaunchModalOpen}
         onClose={handleCloseLaunchModal}
         group={selectedProductionGroup}
         onLaunchSuccess={handleLaunchSuccess}
       />
+
+      {isExcessModalOpen && excessPartData && (
+        <ProductionExcessStockModal
+          isOpen={isExcessModalOpen}
+          onClose={() => setIsExcessModalOpen(false)}
+          partData={excessPartData}
+          pecaTipo={excessPartData.pecaTipo}
+          onLaunchSuccess={() => {
+            setIsExcessModalOpen(false);
+            refetchAllData();
+          }}
+          onSendToAssembly={() => handleSendToAssembly(excessPartData.itemProducaoId, excessPartData.id, excessPartData.quantidade)}
+        />
+      )}
 
       {isStockSelectionModalOpen && itemToDebit && (
         <StockSelectionModal
@@ -1997,7 +2131,22 @@ export default function Producao() {
           quantidadeNecessaria={itemToDebit.quantidadePedido}
           availablePositions={itemToDebit.localEstoqueItem || []}
           formatLocation={formatLocation}
-          totalEstoqueDisponivelGeral={itemToDebit.estoqueAtualItem ?? 0} // Pass estoqueTotal as a new prop
+          totalEstoqueDisponivelGeral={itemToDebit.estoqueAtualItem ?? 0}
+        />
+      )}
+
+      {isPackagingInsumoModalOpen && selectedPedidoForPackaging && (
+        <InsumoSelectionModal
+          isOpen={isPackagingInsumoModalOpen}
+          onClose={() => setIsPackagingInsumoModalOpen(false)}
+          onSelect={(insumo: Insumo, quantidade: number) => {
+            const pedidoId = selectedPedidoForPackaging.id;
+            const existingInsumos = selectedPackagingInsumos[pedidoId] || [];
+            const updatedInsumos = [...existingInsumos, { insumo, quantidade }];
+            setSelectedPackagingInsumos({ ...selectedPackagingInsumos, [pedidoId]: updatedInsumos });
+            setIsPackagingInsumoModalOpen(false);
+          }}
+          insumoTipoFilter={'embalagem'}
         />
       )}
     </div>

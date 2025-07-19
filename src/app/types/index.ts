@@ -18,57 +18,52 @@ export interface Insumo {
   custoPorUnidade: number;
   posicoesEstoque?: PosicaoEstoque[];
   estoqueMinimo: number;
-  cor?: string; // para filamentos
   especificacoes?: {
-    // Filament specific
-    fabricante?: string;
-    tipoFilamento?: string;
-    fornecedor?: string; // Novo campo para fornecedor
-    material?: string;
-    numeroSpools?: number;
-    tamanhoSpool?: string;
-    valorPagoPorSpool?: number;
-    spoolNumero?: number;
-    autoNumberSpool?: boolean;
-    aberto?: boolean;
-    dataAbertura?: string;
-    pesoBruto?: number;
-    pesoLiquido?: number;
-    dataUltimaPesagem?: string;
-    finalizadoEm?: boolean;
-    dataFinalizacao?: string;
-    lote?: string;
-    dataFabricacao?: string;
-    dataCompra?: string;
-    operacoes?: string[];
-    consumoProducao?: number;
-    consumoReal?: number;
-
-    // Embalagem specific
-    tipoEmbalagem?: string;
-    materialEmbalagem?: string;
-    altura?: number;
-    largura?: number;
-    profundidade?: number;
-    quantidade?: number;
-    valorTotalPago?: number;
-    valorFrete?: number;
-    dataCompraEmbalagem?: string;
-
-    // Material specific
-    tipoMaterial?: string; // e.g., "cola", "ímã circular", "placa"
-    materialAssociado?: string; // e.g., "Acetato de Vinila", "Neodímio", "Aço"
-
-    // Tempo specific
-    valorHora?: number;
-
+    filamento?: {
+      fabricante?: string;
+      tipoFilamento?: string;
+      fornecedor?: string;
+      material?: string;
+      numeroSpools?: number;
+      tamanhoSpool?: string;
+      valorPagoPorSpool?: number;
+      spoolNumero?: number;
+      autoNumberSpool?: boolean;
+      aberto?: boolean;
+      dataAbertura?: Timestamp; // Usar apenas um tipo e local para dataAbertura
+      pesoBruto?: number;
+      pesoLiquido?: number;
+      dataUltimaPesagem?: string;
+      finalizadoEm?: boolean;
+      dataFinalizacao?: string;
+      lote?: string;
+      dataFabricacao?: string;
+      dataCompra?: string;
+      operacoes?: string[];
+      consumoProducao?: number; // Consumo específico deste spool
+      consumoReal?: number;
+      cor?: string; // Cor do filamento
+      grupoFilamentoId?: string; // Referência ao ID do grupo de filamento
+      status?: 'aberto' | 'fechado'; // Status do spool
+    };
+    embalagem?: {
+      tipoEmbalagem?: string;
+      materialEmbalagem?: string;
+      altura?: number;
+      largura?: number;
+      profundidade?: number;
+      quantidade?: number;
+      valorTotalPago?: number;
+      valorFrete?: number;
+      dataCompraEmbalagem?: string;
+    };
+    material?: {
+      tipoMaterial?: string; // e.g., "cola", "ímã circular", "placa"
+      materialAssociado?: string; // e.g., "Acetato de Vinila", "Neodímio", "Aço"
+    };
     [key: string]: any; // Allow other arbitrary properties
   };
-  grupoFilamentoId?: string; // Referência ao ID do documento na coleção gruposDeFilamento
   estoqueTotal?: number; // Added for consistency with other product types
-  status?: 'aberto' | 'fechado'; // Novo campo para spools de filamento
-  dataAbertura?: Timestamp; // Novo campo para spools de filamento
-  consumoProducao?: number; // Novo campo para registrar consumo na produção
 }
 
 export interface GrupoDeFilamento {
@@ -99,6 +94,7 @@ export interface Peca {
   sku: string; // SKU base para todas as partes
   nome: string;
   isComposta: boolean;
+  tipoPeca: 'simples' | 'composta_um_grupo_sem_montagem' | 'composta_um_grupo_com_montagem' | 'composta_multiplos_grupos';
   gruposImpressao: GrupoImpressao[];
   tempoMontagem: number; // tempo adicional de montagem para a peça
   custoCalculado: number;
@@ -159,6 +155,16 @@ export interface Kit {
   estoqueTotal?: number; // Added for consistency
 }
 
+export interface ItemProducao {
+  id: string;
+  refId: string;
+  tipo: 'peca' | 'modelo';
+  status: string;
+  quantidade: number;
+  partesDisponiveis?: { parteId: string, quantidade: number }[];
+  pecasDisponiveis?: { pecaId: string, quantidade: number }[];
+}
+
 export interface Pedido {
   id: string;
   numero: string;
@@ -168,7 +174,8 @@ export interface Pedido {
     produtoId: string;
     quantidade: number;
   }[];
-  status: 'aguardando' | 'em_producao' | 'concluido';
+  status: 'aguardando' | 'em_producao' | 'em_montagem_pecas' | 'em_montagem_modelos' | 'processando_embalagem' | 'concluido';
+  itensProducao?: ItemProducao[];
   etapas: {
     impressao: Record<string, 'aguardando' | 'iniciado' | 'concluido'>;
     montagem: Record<string, 'aguardando' | 'iniciado' | 'concluido'>;
@@ -193,14 +200,18 @@ export interface Pedido {
   productionGroups?: ProductionGroup[]; // New field
 }
 
-export interface ProductionGroupInsumo {
-  id: string; // Insumo ID
+export interface ProductionGroupFilamento extends PecaInsumo {
+  id: string; // Added ID
   nome: string;
-  quantidade: number;
-  tipo: string; // e.g., 'material', 'tempo', 'outros'
-  etapaInstalacao?: 'impressao' | 'montagem'; // For materials
-  estoqueAtualInsumo?: number; // Current stock of this specific insumo
-  localEstoqueInsumo?: PosicaoEstoque[]; // Where the insumo stock is located
+  estoqueAtualFilamento?: number;
+  localEstoqueFilamento?: PosicaoEstoque[];
+}
+
+export interface ProductionGroupOutroInsumo extends PecaInsumo {
+  id: string; // Added ID
+  nome: string;
+  estoqueAtualInsumo?: number;
+  localEstoqueInsumo?: PosicaoEstoque[];
 }
 
 export interface ProductionGroup {
@@ -221,15 +232,8 @@ export interface ProductionGroup {
     hasAssembly?: boolean; // Added to indicate if this specific item requires assembly
     tipoProduto?: 'parte' | 'peca' | 'modelo' | 'kit' | 'insumo'; // Added to identify product type
   }[];
-  filamentosNecessarios: { // Filaments needed for this group
-    id: string; // Insumo ID or GrupoDeFilamento ID
-    nome: string;
-    quantidade: number; // in grams
-    tipo: string; // e.g., 'filamento' - Added this property
-    estoqueAtualFilamento?: number; // Current stock of this specific filament
-    localEstoqueFilamento?: PosicaoEstoque[]; // Where the filament stock is located
-  }[];
-  outrosInsumosNecessarios?: ProductionGroupInsumo[]; // New field for other insumos
+  filamentosNecessarios: ProductionGroupFilamento[];
+  outrosInsumosNecessarios?: ProductionGroupOutroInsumo[];
   tempoImpressaoGrupo: number;
   consumoFilamentoGrupo: number;
   status: 'aguardando' | 'em_producao' | 'produzido' | 'em_montagem' | 'montado' | 'concluido';
@@ -241,6 +245,7 @@ export interface ProductionGroup {
   pedidoTotalTempoMontagem: number;
   startedAt?: Date | FieldValue | null; // When production started
   completedAt?: Date | FieldValue | null; // When production completed
+  quantidadeMaxima?: number; // New field to store the max quantity from GrupoImpressao
 }
 
 export interface Historico {
@@ -310,7 +315,7 @@ export interface LancamentoProduto {
 export interface LancamentoInsumo {
   id: string;
   insumoId: string;
-  tipoInsumo: 'filamento' | 'tempo' | 'material' | 'outros';
+  tipoInsumo: 'filamento' | 'material' | 'outros';
   tipoMovimento: 'entrada' | 'saida' | 'ajuste';
   quantidade: number;
   unidadeMedida?: string; // Made optional as it might not be relevant for all insumos in a lancamento
@@ -329,4 +334,19 @@ export interface Produto {
   tipoProduto: 'parte' | 'peca' | 'modelo' | 'kit' | 'insumo';
   // Computed property, not stored in Firestore
   estoqueTotal?: number;
+}
+
+export interface Servico {
+  id: string;
+  nome: string;
+  unidade: string;
+  custoPorUnidade: number;
+}
+
+export interface LancamentoServico {
+  servicoId: string;
+  pedidoId: string;
+  quantidade: number;
+  data: Timestamp;
+  usuario: string;
 }

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { db } from '../services/firebase';
 import { collection, doc, getDocs, getDoc, writeBatch, addDoc } from 'firebase/firestore';
 import Select from 'react-select';
-import { LocalDeEstoque, Recipiente } from '../types/mapaEstoque';
+import { LocalProduto, Recipiente } from '../types/mapaEstoque';
 import { PosicaoEstoque, Produto, Parte } from '../types';
 import { X } from 'lucide-react';
 
@@ -10,16 +10,18 @@ interface ProductionExcessStockModalProps {
   isOpen: boolean;
   onClose: () => void;
   onLaunchSuccess: () => void;
+  onSendToAssembly: () => void; // New prop for assembly logic
   partData: {
     id: string;
     nome: string;
     sku: string;
     quantidade: number;
   };
+  pecaTipo: 'simples' | 'composta_um_grupo_sem_montagem' | 'composta_um_grupo_com_montagem' | 'composta_multiplos_grupos';
 }
 
-const ProductionExcessStockModal: React.FC<ProductionExcessStockModalProps> = ({ isOpen, onClose, onLaunchSuccess, partData }) => {
-  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalDeEstoque[]>([]);
+const ProductionExcessStockModal: React.FC<ProductionExcessStockModalProps> = ({ isOpen, onClose, onLaunchSuccess, onSendToAssembly, partData, pecaTipo }) => {
+  const [locaisDeEstoque, setLocaisDeEstoque] = useState<LocalProduto[]>([]);
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
   const [allParts, setAllParts] = useState<Parte[]>([]);
 
@@ -37,12 +39,12 @@ const ProductionExcessStockModal: React.FC<ProductionExcessStockModalProps> = ({
       setLoading(true);
       try {
         const [locaisSnapshot, recipientesSnapshot, partsSnapshot] = await Promise.all([
-          getDocs(collection(db, 'locaisDeEstoque')),
+          getDocs(collection(db, 'locaisProdutos')),
           getDocs(collection(db, 'recipientes')),
           getDocs(collection(db, 'partes'))
         ]);
 
-        setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalDeEstoque[]);
+        setLocaisDeEstoque(locaisSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as LocalProduto[]);
         setRecipientes(recipientesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Recipiente[]);
         setAllParts(partsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Parte[]);
 
@@ -256,12 +258,26 @@ const ProductionExcessStockModal: React.FC<ProductionExcessStockModalProps> = ({
             )}
           </div>
 
-          <div className="flex justify-end pt-4 border-t border-gray-200 flex-shrink-0 mt-6">
-            <button type="button" className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50" onClick={onClose} disabled={loading}>Cancelar</button>
-            <button type="submit" className="ml-3 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400" disabled={loading || !divisao}>
-              {loading ? 'Lançando...' : 'Confirmar Lançamento'}
-            </button>
-          </div>
+          {pecaTipo === 'composta_um_grupo_com_montagem' || pecaTipo === 'composta_multiplos_grupos' ? (
+            <div className="flex justify-end pt-4 border-t border-gray-200 flex-shrink-0 mt-6 space-x-3">
+              <button type="button" className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50" onClick={onClose} disabled={loading}>
+                Cancelar
+              </button>
+              <button type="button" onClick={onSendToAssembly} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400" disabled={loading}>
+                Enviar para Montagem
+              </button>
+              <button type="submit" className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400" disabled={loading || !divisao}>
+                {loading ? 'Lançando...' : 'Lançar em Estoque'}
+              </button>
+            </div>
+          ) : (
+            <div className="flex justify-end pt-4 border-t border-gray-200 flex-shrink-0 mt-6">
+              <button type="button" className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50" onClick={onClose} disabled={loading}>Cancelar</button>
+              <button type="submit" className="ml-3 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400" disabled={loading || !divisao}>
+                {loading ? 'Lançando...' : 'Confirmar Lançamento'}
+              </button>
+            </div>
+          )}
         </form>
       </div>
     </div>
