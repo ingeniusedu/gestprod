@@ -1,7 +1,7 @@
 import React, { Fragment, useState, useEffect } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { X } from 'lucide-react';
-import { ProductionGroup, Parte, EstoqueLancamento, Peca, Modelo } from '../types';
+import { ProductionGroup, Parte, Peca, Modelo, OptimizedGroup } from '../types';
 import { db } from '../services/firebase';
 import { collection, addDoc, updateDoc, doc, getDoc, getDocs, Timestamp } from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
@@ -10,7 +10,7 @@ import ProductionExcessStockModal from './ProductionExcessStockModal'; // Import
 interface ProductionLaunchModalProps {
   isOpen: boolean;
   onClose: () => void;
-  group: ProductionGroup | null;
+  group: OptimizedGroup | null;
   onLaunchSuccess: () => void;
 }
 
@@ -52,17 +52,17 @@ export default function ProductionLaunchModal({
 
   useEffect(() => {
     if (group) {
-      const mappedParts = group.items.map((item) => ({
-        id: item.id,
-        nome: item.nome,
-        quantidadeNecessaria: item.quantidadePedido,
-        quantidadeProduzida: item.quantidadePedido, // Default to full production
+      const mappedParts = Object.entries(group.partesNoGrupo).map(([id, parteInfo]) => ({
+        id: id,
+        nome: parteInfo.nome,
+        quantidadeNecessaria: parteInfo.quantidade,
+        quantidadeProduzida: parteInfo.quantidade, // Default to full production
         quantidadePerdida: 0,
-        hasAssembly: item.hasAssembly || false,
+        hasAssembly: allPecas.some(peca => peca.gruposImpressao.some(gi => gi.partes.some(p => p.parteId === id && p.hasAssembly))), // Determine if part has assembly
       }));
       setPartsToProduce(mappedParts);
     }
-  }, [group]);
+  }, [group, allPecas]); // Add allPecas to dependency array
 
   const handleQuantityChange = (
     partId: string,
@@ -91,7 +91,7 @@ export default function ProductionLaunchModal({
         newGroupStatus = 'montado'; // If no parts require assembly, they go straight to 'montado'
       }
 
-      const pedidoRef = doc(db, 'pedidos', group.pedidoId);
+      const pedidoRef = doc(db, 'pedidos', group.pedidosOrigem[0].pedidoId);
       const pedidoSnap = await getDoc(pedidoRef);
 
       if (pedidoSnap.exists()) {
@@ -108,28 +108,25 @@ export default function ProductionLaunchModal({
       }
 
       for (const part of partsToProduce) {
-        // Only record losses, as production for orders should not automatically enter stock.
-        // Stock entry for excess production is handled by ProductionExcessStockModal.
         if (part.quantidadePerdida > 0) {
           if (!part.id) {
             console.error(`Erro: ID da parte indefinido para registro de perda: ${part.nome}. Pulando esta parte.`);
             continue;
           }
-          const estoqueLancamentoPerda: EstoqueLancamento = {
-            id: uuidv4(),
-            tipoProduto: 'partes',
+      
+          const lancamentoPerda = {
             produtoId: part.id,
+            tipoProduto: 'parte',
             tipoMovimento: 'saida',
+            quantidade: part.quantidadePerdida,
             data: Timestamp.fromDate(new Date()),
             usuario: 'Sistema de Produção',
-            observacao: `Perda registrada durante a produção do Pedido #${group.pedidoNumero}, Grupo de Impressão ${group.sourceName}`,
-            locais: [{
-              recipienteId: 'unknown', // Placeholder, as we don't have recipient info for losses here
-              quantidade: part.quantidadePerdida,
-              localId: 'unknown', // Placeholder
-            }],
+            observacao: `Perda registrada durante a produção do Pedido #${group.pedidosOrigem[0].pedidoNumero}, Grupo de Impressão ${group.sourceName}`,
+            locais: [], // Array vazio para compatibilidade com a função de nuvem
           };
-          await addDoc(collection(db, 'lancamentosEstoque'), estoqueLancamentoPerda);
+      
+          // Corrigido de 'lancamentosEstoque' para 'lancamentosProdutos'
+          await addDoc(collection(db, 'lancamentosProdutos'), lancamentoPerda);
         }
       }
 
@@ -350,6 +347,8 @@ export default function ProductionLaunchModal({
                     onClose={handleCloseExcessStockModal}
                     onLaunchSuccess={handleExcessStockSuccess}
                     partData={excessPartData}
+                    onSendToAssembly={() => {}}
+                    pecaTipo="simples"
                   />
                 )}
               </Dialog.Panel>

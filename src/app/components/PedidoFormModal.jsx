@@ -4,7 +4,7 @@ import { useState, useEffect, Fragment } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { Search, X, Plus, Minus } from 'lucide-react';
 import { db } from '../services/firebase';
-import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, addDoc, Timestamp } from 'firebase/firestore';
 
 export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }) {
   const [pedido, setPedido] = useState({
@@ -14,10 +14,14 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
     dataPrevisao: new Date(),
     status: 'aguardando',
     produtos: [], // Embedded product data
-    custos: { total: 0, materiais: 0, servicos: 0 },
-    tempos: { totalImpressao: 0, totalMontagem: 0 },
-    etapasProducao: [], // Will be populated on production order generation
+    custos: { insumos: 0, tempo: 0, total: 0, filamento: 0 }, // Added filamento cost
+    tempos: { impressao: 0, montagem: 0, total: 0, totalConsumoFilamento: 0 },
   });
+
+  // States for service costs
+  const [custoPorMinutoImpressao, setCustoPorMinutoImpressao] = useState(0);
+  const [custoPorMinutoMontagem, setCustoPorMinutoMontagem] = useState(0);
+  const [custoPorGramaFilamento, setCustoPorGramaFilamento] = useState(0);
 
   // States for product selection directly within this modal
   const [availableProducts, setAvailableProducts] = useState([]);
@@ -28,8 +32,8 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
     if (initialData) {
       setPedido({
         ...initialData,
-        dataCriacao: initialData.dataCriacao ? new Date(initialData.dataCriacao) : new Date(),
-        dataPrevisao: initialData.dataPrevisao ? new Date(initialData.dataPrevisao) : new Date(),
+        dataCriacao: initialData.dataCriacao ? initialData.dataCriacao.toDate() : new Date(),
+        dataPrevisao: initialData.dataPrevisao ? initialData.dataPrevisao.toDate() : new Date(),
       });
     } else {
       setPedido({
@@ -39,19 +43,34 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
         dataPrevisao: new Date(),
         status: 'aguardando',
         produtos: [],
-        custos: { total: 0, materiais: 0, servicos: 0 },
-        tempos: { totalImpressao: 0, totalMontagem: 0 },
-        etapasProducao: [],
+        custos: { insumos: 0, tempo: 0, total: 0, filamento: 0 }, // Added filamento cost
+        tempos: { impressao: 0, montagem: 0, total: 0, totalConsumoFilamento: 0 },
       });
     }
     if (isOpen) {
       fetchAvailableProducts(); // Fetch products when the modal opens
+      fetchServiceCosts(); // Fetch service costs when the modal opens
     }
   }, [isOpen, initialData]);
 
   useEffect(() => {
     calculateTotals();
-  }, [pedido.produtos]);
+  }, [pedido.produtos, custoPorMinutoImpressao, custoPorMinutoMontagem, custoPorGramaFilamento]);
+
+  const fetchServiceCosts = async () => {
+    try {
+      const docRef = doc(db, 'settings', 'serviceCosts');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setCustoPorMinutoImpressao(parseFloat(data.custoPorMinutoImpressao) || 0);
+        setCustoPorMinutoMontagem(parseFloat(data.custoPorMinutoMontagem) || 0);
+        setCustoPorGramaFilamento(parseFloat(data.custoPorGramaFilamento) || 0);
+      }
+    } catch (error) {
+      console.error("Error fetching service costs: ", error);
+    }
+  };
 
   const fetchAvailableProducts = async () => {
     try {
@@ -246,6 +265,7 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
             tempoMontagemEstimado: productSnapshot.tempoMontagemEstimado,
             insumosNecessarios: productSnapshot.insumosNecessarios,
             pecasComponentes: productSnapshot.pecasComponentes,
+            gruposImpressao: productSnapshot.gruposImpressao || [], // Ensure groups are carried over
             quantidade: 1 // Initial quantity
           }],
         }));
@@ -274,16 +294,14 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
   };
 
   const calculateTotals = () => {
-    let totalCusto = 0;
-    let totalMateriais = 0;
-    let totalServicos = 0;
+    let totalCustoInsumosProdutos = 0; // Cost from product's custoUnitario
     let totalTempoImpressao = 0;
     let totalTempoMontagem = 0;
     let totalConsumoFilamento = 0;
 
     pedido.produtos.forEach(product => {
       const quantity = product.quantidade || 0;
-      totalCusto += (product.custoUnitario || 0) * quantity;
+      totalCustoInsumosProdutos += (product.custoUnitario || 0) * quantity;
       totalTempoImpressao += (product.tempoImpressaoEstimado || 0) * quantity;
       totalTempoMontagem += (product.tempoMontagemEstimado || 0) * quantity;
 
@@ -294,73 +312,101 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
       });
     });
 
+    // Calculate monetary costs for time and filament
+    const custoMonetarioImpressao = totalTempoImpressao * custoPorMinutoImpressao;
+    const custoMonetarioMontagem = totalTempoMontagem * custoPorMinutoMontagem;
+    const custoMonetarioFilamento = totalConsumoFilamento * custoPorGramaFilamento;
+
+    const totalCustoTempo = custoMonetarioImpressao + custoMonetarioMontagem;
+    const totalCustoGeral = totalCustoInsumosProdutos + totalCustoTempo + custoMonetarioFilamento;
+
     setPedido(prevPedido => ({
       ...prevPedido,
       custos: {
-        total: totalCusto,
-        materiais: totalCusto,
-        servicos: 0,
+        insumos: totalCustoInsumosProdutos,
+        tempo: totalCustoTempo,
+        filamento: custoMonetarioFilamento,
+        total: totalCustoGeral,
       },
       tempos: {
-        totalImpressao: totalTempoImpressao,
-        totalMontagem: totalTempoMontagem,
+        impressao: totalTempoImpressao,
+        montagem: totalTempoMontagem,
+        total: totalTempoImpressao + totalTempoMontagem,
         totalConsumoFilamento: totalConsumoFilamento,
       },
     }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
-    const itensProducao = [];
-    const pecasMap = new Map();
-
-    // Função para processar peças de um produto
-    const processarPecas = (produto) => {
-      if (produto.tipo === 'peca') {
-        const pecaId = produto.produtoId;
-        const quantidade = produto.quantidade;
-        if (pecasMap.has(pecaId)) {
-          pecasMap.set(pecaId, pecasMap.get(pecaId) + quantidade);
-        } else {
-          pecasMap.set(pecaId, quantidade);
-        }
-      } else if (produto.pecasComponentes) {
-        produto.pecasComponentes.forEach(pecaComponente => {
-          const pecaId = pecaComponente.id;
-          const quantidade = pecaComponente.quantidade * produto.quantidade;
-          if (pecasMap.has(pecaId)) {
-            pecasMap.set(pecaId, pecasMap.get(pecaId) + quantidade);
-          } else {
-            pecasMap.set(pecaId, quantidade);
-          }
-        });
-      }
+    // Prepare the simplified Pedido document
+    const simplifiedPedido = {
+      numero: pedido.numero,
+      comprador: pedido.comprador,
+      produtos: pedido.produtos.map(p => ({
+        produtoId: p.produtoId,
+        tipo: p.tipo,
+        nomeProduto: p.nome,
+        skuProduto: p.SKU,
+        quantidade: p.quantidade,
+        statusProducaoItem: 'aguardando_producao', // Initial status
+      })),
+      status: 'aguardando', // Initial overall status
+      dataCriacao: Timestamp.fromDate(pedido.dataCriacao),
+      dataPrevisao: Timestamp.fromDate(pedido.dataPrevisao),
+      custos: pedido.custos, // Include calculated costs
+      tempos: pedido.tempos, // Include calculated times
     };
 
-    pedido.produtos.forEach(processarPecas);
+    // Defensive measure: ensure no unexpected properties are included
+    const finalSimplifiedPedido = { ...simplifiedPedido };
+    delete finalSimplifiedPedido.itensProducao; // Ensure this is not present
+    delete finalSimplifiedPedido.etapasProducao; // Ensure this is not present
 
-    pecasMap.forEach((quantidade, pecaId) => {
-      itensProducao.push({
-        id: `${pecaId}-${Date.now()}`, // Simple unique ID
-        refId: pecaId,
-        tipo: 'peca',
-        status: 'aguardando',
-        quantidade: quantidade,
-        partesDisponiveis: [],
-        pecasDisponiveis: [],
+    try {
+      // Save the simplified Pedido document
+      const docRef = await addDoc(collection(db, 'pedidos'), finalSimplifiedPedido); // Use finalSimplifiedPedido
+      const newPedidoId = docRef.id;
+      console.log("Pedido simplificado salvo com ID:", newPedidoId, finalSimplifiedPedido); // Log the actual object saved
+
+      // Prepare the LancamentoProducao document payload
+      const lancamentoProducaoPayload = {
+        pedidoId: newPedidoId,
+        pedidoNumero: pedido.numero,
+        produtos: pedido.produtos.map(p => ({
+          produtoId: p.produtoId,
+          tipo: p.tipo,
+          nomeProduto: p.nome,
+          skuProduto: p.SKU,
+          quantidade: p.quantidade,
+          custoUnitario: p.custoUnitario || 0,
+          tempoImpressaoEstimado: p.tempoImpressaoEstimado || 0,
+          tempoMontagemEstimado: p.tempoMontagemEstimado || 0,
+          insumosNecessarios: p.insumosNecessarios || [],
+          pecasComponentes: p.pecasComponentes || [],
+          gruposImpressao: p.gruposImpressao || [], // Include detailed groups if available
+        })),
+      };
+      console.log("Payload para lancamentosProducao:", lancamentoProducaoPayload); // Log the payload
+
+      // Create and launch the 'criacao_pedido' event in lancamentosProducao
+      await addDoc(collection(db, 'lancamentosProducao'), {
+        tipoEvento: 'criacao_pedido',
+        timestamp: Timestamp.now(),
+        usuarioId: 'current_user_id', // TODO: Replace with actual user ID
+        pedidoId: newPedidoId,
+        pedidoNumero: pedido.numero, // Add pedidoNumero directly
+        payload: lancamentoProducaoPayload,
       });
-    });
+      console.log("Evento 'criacao_pedido' lançado em lancamentosProducao.");
 
-    const pedidoParaSalvar = {
-      ...pedido,
-      itensProducao: itensProducao,
-      produtos: pedido.produtos.map(({ produtoId, tipo, quantidade }) => ({ produtoId, tipo, quantidade })), // Salvar apenas o necessário
-    };
-    delete pedidoParaSalvar.etapasProducao; // Remover campo obsoleto
-
-    onSave(pedidoParaSalvar);
-    onClose();
+      onSave({ id: newPedidoId, ...simplifiedPedido }); // Pass the new ID back
+      onClose();
+    } catch (error) {
+      console.error("Erro ao salvar pedido ou lançar evento de produção: ", error);
+      // Optionally, show an error message to the user
+    }
   };
 
   const handleDateChange = (e, field) => {
@@ -585,12 +631,24 @@ export default function PedidoFormModal({ isOpen, onClose, onSave, initialData }
                           <p className="mt-1 text-lg font-bold text-gray-900">R$ {pedido.custos.total.toFixed(2)}</p>
                         </div>
                         <div>
+                          <p className="text-sm font-medium text-gray-700">Custo de Insumos:</p>
+                          <p className="mt-1 text-lg font-bold text-gray-900">R$ {pedido.custos.insumos.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Custo de Tempo (Impressão + Montagem):</p>
+                          <p className="mt-1 text-lg font-bold text-gray-900">R$ {pedido.custos.tempo.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Custo de Filamento:</p>
+                          <p className="mt-1 text-lg font-bold text-gray-900">R$ {pedido.custos.filamento.toFixed(2)}</p>
+                        </div>
+                        <div>
                           <p className="text-sm font-medium text-gray-700">Tempo Total de Impressão:</p>
-                          <p className="mt-1 text-lg font-bold text-gray-900">{pedido.tempos.totalImpressao} min</p>
+                          <p className="mt-1 text-lg font-bold text-gray-900">{pedido.tempos.impressao} min</p>
                         </div>
                         <div>
                           <p className="text-sm font-medium text-gray-700">Tempo Total de Montagem:</p>
-                          <p className="mt-1 text-lg font-bold text-gray-900">{pedido.tempos.totalMontagem} min</p>
+                          <p className="mt-1 text-lg font-bold text-gray-900">{pedido.tempos.montagem} min</p>
                         </div>
                         <div>
                           <p className="text-sm font-medium text-gray-700">Consumo Total de Filamento:</p>

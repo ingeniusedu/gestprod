@@ -28,13 +28,26 @@ export default function Pedidos() {
   const fetchPedidos = async () => {
     try {
       const querySnapshot = await getDocs(collection(db, 'pedidos'));
-      const pedidosList = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        dataCriacao: doc.data().dataCriacao.toDate(),
-        dataPrevisao: doc.data().dataPrevisao.toDate(),
-        dataConclusao: doc.data().dataConclusao ? doc.data().dataConclusao.toDate() : null,
-      }));
+      const pedidosList = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        const convertToDate = (timestampOrDate) => {
+          if (timestampOrDate && typeof timestampOrDate.toDate === 'function') {
+            return timestampOrDate.toDate(); // It's a Firebase Timestamp
+          }
+          if (timestampOrDate instanceof Date) {
+            return timestampOrDate; // It's already a JavaScript Date object
+          }
+          return null; // If neither, return null
+        };
+
+        return {
+          id: doc.id,
+          ...data,
+          dataCriacao: convertToDate(data.dataCriacao),
+          dataPrevisao: convertToDate(data.dataPrevisao),
+          dataConclusao: convertToDate(data.dataConclusao),
+        };
+      });
       setPedidos(pedidosList);
     } catch (error) {
       console.error("Error fetching pedidos: ", error);

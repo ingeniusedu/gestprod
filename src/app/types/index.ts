@@ -3,7 +3,7 @@ import { FieldValue, Timestamp } from 'firebase/firestore';
 
 export interface PosicaoEstoque {
   recipienteId?: string; // Made optional
-  divisao?: { h: number; v: number };
+  divisao?: { h: number; v: number } | null; // Allow null for consistency
   quantidade: number;
   localId?: string; // Adicionado para referência direta
   localNome?: string; // Adicionado para exibição
@@ -82,11 +82,40 @@ export interface GrupoDeFilamento {
 export interface PecaInsumo {
   insumoId?: string; // For non-filament insumos (e.g., material, tempo, outros)
   grupoFilamentoId?: string; // For filament insumos, ID from a `gruposDeFilamento` document
+  nome?: string; // Adicionado para facilitar a exibição
   quantidade: number;
   tipo: string; // e.g., 'filamento', 'material', 'tempo', 'outros'
   etapaInstalacao?: 'impressao' | 'montagem'; // Para insumos do tipo 'material'
   isAlternative?: boolean;
   alternativeFilaments?: PecaInsumo[]; // For alternative filament groups
+}
+
+export interface OptimizedFilamentItem extends ProductionGroupFilamento {
+  aggregatedId: string;
+  quantidadeNecessaria?: number;
+  estoqueAtual?: number;
+}
+
+export interface OptimizedInsumoItem extends ProductionGroupOutroInsumo {
+  aggregatedId: string;
+  quantidadeNecessaria?: number;
+  estoqueAtual?: number;
+}
+
+export interface OptimizedGroup {
+  id: string;
+  partesNoGrupo: { [key: string]: { nome: string; quantidade: number; estoqueAtual?: number; quantidadeNecessaria?: number; } };
+  totalPartsQuantity: number; // Renamed from quantidadeTotal
+  aggregatedGroupCount: number; // New field to track number of aggregated production groups
+  pedidosOrigem: { pedidoId: string; pedidoNumero: string; groupId: string }[];
+  sourceName: string;
+  tempoImpressaoGrupo: number;
+  corFilamento?: string;
+  filamentosNecessarios: OptimizedFilamentItem[];
+  outrosInsumosNecessarios: OptimizedInsumoItem[];
+  insumosProntos: boolean;
+  partesProntas: boolean;
+  status: ProductionGroup['status']; // Add status property
 }
 
 export interface Peca {
@@ -111,6 +140,7 @@ export interface GrupoImpressao {
   outrosInsumos?: PecaInsumo[]; // New field for materials, time, others
   partes: PecaParte[];
   tempoImpressao: number;
+  consumoFilamento: number; // Adicionado para o consumo de filamento do grupo
   quantidadeMaxima?: number;
 }
 
@@ -119,6 +149,7 @@ export interface PecaParte {
   nome?: string; // Adicionado para facilitar a exibição no formulário
   quantidade: number;
   identificador?: string; // Adicionado para armazenar o identificador da parte na peça composta
+  hasAssembly?: boolean; // Adicionado para indicar se a parte requer montagem
 }
 
 export interface Modelo {
@@ -155,97 +186,131 @@ export interface Kit {
   estoqueTotal?: number; // Added for consistency
 }
 
-export interface ItemProducao {
-  id: string;
-  refId: string;
-  tipo: 'peca' | 'modelo';
-  status: string;
-  quantidade: number;
-  partesDisponiveis?: { parteId: string, quantidade: number }[];
-  pecasDisponiveis?: { pecaId: string, quantidade: number }[];
-}
-
 export interface Pedido {
   id: string;
-  numero: string;
-  comprador: string;
+  numero: string; // Número do pedido (identificador humano)
+  comprador: string; // Nome do comprador
+  
+  // Produtos do pedido: uma lista dos itens que foram pedidos.
+  // Esta lista será mais "estática" e não conterá detalhes dinâmicos de produção.
   produtos: {
-    tipo: 'kit' | 'modelo' | 'peca';
-    produtoId: string;
-    quantidade: number;
-  }[];
-  status: 'aguardando' | 'em_producao' | 'em_montagem_pecas' | 'em_montagem_modelos' | 'processando_embalagem' | 'concluido';
-  itensProducao?: ItemProducao[];
-  etapas: {
-    impressao: Record<string, 'aguardando' | 'iniciado' | 'concluido'>;
-    montagem: Record<string, 'aguardando' | 'iniciado' | 'concluido'>;
-    embalagem: Record<string, 'aguardando' | 'iniciado' | 'concluido'>;
-    faturamento: Record<string, 'aguardando' | 'iniciado' | 'concluido'>;
-    envio: Record<string, 'aguardando' | 'iniciado' | 'concluido'>;
-  };
-  custos: {
+    produtoId: string; // ID do produto (Kit, Modelo, Peça)
+    tipo: 'kit' | 'modelo' | 'peca'; // Tipo do produto
+    nomeProduto: string; // Nome do produto para exibição
+    skuProduto: string; // SKU do produto para exibição
+    quantidade: number; // Quantidade total deste produto no pedido
+    
+    // O status de produção de cada item do pedido será *derivado*
+    // dos documentos nas coleções de produção (gruposProducaoOtimizados, emMontagemPeca, etc.)
+    // e não mais armazenado diretamente aqui.
+    // Podemos manter um status de alto nível para exibição rápida, mas ele seria atualizado por uma Cloud Function
+    // que agrega o status das tarefas de produção vinculadas.
+    statusProducaoItem?: 'aguardando_producao' | 'em_producao' | 'produzido' | 'em_montagem_pecas' | 'em_montagem_modelos' | 'pronto_para_embalagem' | 'concluido' | 'montado'; // Added 'montado'
+    gruposImpressaoProducao?: ProductionGroup[]; // Adicionado para rastrear grupos de impressão gerados
+    atendimentoEstoqueDetalhado?: { // Adicionado para rastrear atendimento de estoque detalhado
+      quantidadeProdutoAtendidaDiretamente?: number;
+      partesAtendidas?: { parteId: string; quantidade: number }[];
+      pecasAtendidas?: { pecaId: string; quantidade: number }[];
+      modelosAtendidos?: { modeloId: string; quantidade: number }[];
+    };
+  }[]; 
+
+  // Status geral do pedido: também será derivado ou atualizado por uma Cloud Function
+  // que agrega o status de todos os itens de produção vinculados.
+  status: 'aguardando' | 'em_producao' | 'em_montagem' | 'processando_embalagem' | 'concluido' | 'cancelado';
+
+  dataCriacao: Date | Timestamp;
+  dataPrevisao: Date | Timestamp;
+  dataConclusao?: Date | Timestamp | null;
+
+  // Custos e tempos totais podem ser agregados e armazenados aqui,
+  // mas os detalhes de como esses custos/tempos são calculados virão das coleções de produção.
+  custos?: {
     insumos: number;
     tempo: number;
     total: number;
   };
-  tempos: {
+  tempos?: {
     impressao: number;
     montagem: number;
     total: number;
-    totalConsumoFilamento?: number; // Added this property
+    totalConsumoFilamento?: number;
   };
-  dataCriacao: Date;
-  dataPrevisao: Date;
-  dataConclusao?: Date;
-  productionGroups?: ProductionGroup[]; // New field
+}
+
+export interface LancamentoProducao {
+  id: string;
+  tipoEvento: 'criacao_pedido' | 'inicio_impressao' | 'conclusao_impressao' | 'inicio_montagem_peca' | 'conclusao_montagem_peca' | 'inicio_montagem_modelo' | 'conclusao_montagem_modelo' | 'inicio_montagem_kit' | 'conclusao_montagem_kit' | 'inicio_embalagem' | 'conclusao_embalagem';
+  timestamp: Timestamp;
+  usuarioId: string;
+  pedidoId?: string;
+  grupoProducaoId?: string; // Se o evento se refere a um grupo de impressão
+  tarefaProducaoId?: string; // Se o evento se refere a uma tarefa de montagem/embalagem
+  payload: any; // Dados específicos do evento (ex: lista de grupos de impressão do pedido, produtos gerados)
+}
+
+export interface StockOption {
+  id: string;
+  nome: string;
+  tipo: 'kit' | 'modelo' | 'peca' | 'parte';
+  quantidadeNecessaria: number;
+  quantidadeUsarEstoque: number;
+  estoqueAtualItem: number;
+  quantidadeDisponivel: number; // Added
+  posicoesEstoque: PosicaoEstoque[];
+  parentId?: string; // For parts, refers to the parent peca
+  children?: StockOption[]; // For kits/models/pecas, refers to their components
 }
 
 export interface ProductionGroupFilamento extends PecaInsumo {
-  id: string; // Added ID
-  nome: string;
+  id: string; // ID do insumo/grupo de filamento
+  nome: string; // Nome do insumo/grupo de filamento
+  cor?: string; // Adicionado para a cor do filamento
   estoqueAtualFilamento?: number;
   localEstoqueFilamento?: PosicaoEstoque[];
 }
 
 export interface ProductionGroupOutroInsumo extends PecaInsumo {
-  id: string; // Added ID
-  nome: string;
+  id: string; // ID do insumo
+  nome: string; // Nome do insumo
   estoqueAtualInsumo?: number;
   localEstoqueInsumo?: PosicaoEstoque[];
 }
 
 export interface ProductionGroup {
-  id: string; // Unique ID for the production group (e.g., combination of pedidoId and group index)
-  sourceId: string; // ID of the original product (peca, modelo, kit)
-  sourceType: 'peca' | 'modelo' | 'kit';
-  sourceName: string;
-  originalPecaId?: string; // New field for original Peca ID
-  originalModeloId?: string; // New field for original Modelo ID
-  originalKitId?: string; // New field for original Kit ID
-  corFilamento?: string; // Main filament color for the group
-  items: { // Parts/components within this group
-    id: string; // ID of the part/component (e.g., Parte.id)
-    nome: string;
-    quantidadePedido: number; // Quantity of this item required for the group
-    estoqueAtualItem?: number; // Current stock of this specific item
-    localEstoqueItem?: PosicaoEstoque[]; // Where the stock is located
-    hasAssembly?: boolean; // Added to indicate if this specific item requires assembly
-    tipoProduto?: 'parte' | 'peca' | 'modelo' | 'kit' | 'insumo'; // Added to identify product type
-  }[];
-  filamentosNecessarios: ProductionGroupFilamento[];
-  outrosInsumosNecessarios?: ProductionGroupOutroInsumo[];
-  tempoImpressaoGrupo: number;
-  consumoFilamentoGrupo: number;
-  status: 'aguardando' | 'em_producao' | 'produzido' | 'em_montagem' | 'montado' | 'concluido';
-  pedidoId: string;
-  pedidoNumero: string;
-  pedidoComprador: string;
-  pedidoTotalTempoImpressao: number;
-  pedidoTotalConsumoFilamento: number;
-  pedidoTotalTempoMontagem: number;
-  startedAt?: Date | FieldValue | null; // When production started
-  completedAt?: Date | FieldValue | null; // When production completed
-  quantidadeMaxima?: number; // New field to store the max quantity from GrupoImpressao
+  id?: string; // ID único para esta instância específica do grupo de produção (optional as it's generated by Firestore)
+  sourceId: string; // ID da peça que gerou este grupo de impressão
+  sourceType: 'peca'; // O tipo da peça que gerou este grupo (sempre 'peca' para grupos de impressão)
+  sourceName: string; // Nome da peça que gerou este grupo
+  sourceGrupoImpressaoId?: string; // ID do GrupoImpressao original que gerou este grupo de produção
+  pedidosOrigem?: { pedidoId: string; pedidoNumero: string; groupId: string }[]; // New: Store all original group origins
+  totalPartsQuantity?: number; // New: Total parts for this specific production group instance
+  
+  // Links explícitos para a hierarquia do produto pai dentro do PedidoProdutoComProducao
+  parentPecaId?: string; // Se este grupo pertence a uma peça
+  parentModeloId?: string; // Se este grupo pertence a um modelo (via uma peça)
+  parentKitId?: string; // Se este grupo pertence a um kit (via um modelo/peça)
+
+  corFilamento?: string; // Cor principal do filamento para o grupo
+  partesNoGrupo: { [parteId: string]: { nome: string; quantidade: number; hasAssembly?: boolean; estoqueAtual?: number; quantidadeNecessaria?: number; localEstoqueItem?: PosicaoEstoque[]; } }; // Changed from items array to map, removed stock fields
+  filamentosNecessarios: ProductionGroupFilamento[]; // Filamentos necessários para este grupo
+  outrosInsumosNecessarios?: ProductionGroupOutroInsumo[]; // Outros insumos necessários
+  tempoImpressaoGrupo: number; // Tempo de impressão para este grupo
+  consumoFilamentoGrupo: number; // Consumo de filamento para este grupo
+  
+  // Status específico deste grupo de impressão
+  status: 'aguardando' | 'em_producao' | 'produzido' | 'cancelado_por_estoque' | 'montado'; // 'cancelado_por_estoque' indica que não precisa ser impresso
+
+  // Quantidades para controle de produção e estoque
+  quantidadeOriginalGrupo: number; // A quantidade original que este grupo deveria produzir
+  quantidadeProduzirGrupo: number; // A quantidade restante a ser produzida para este grupo (após decisões de estoque)
+  
+  startedAt?: Date | FieldValue | null; // Quando a produção deste grupo começou
+  completedAt?: Date | FieldValue | null; // Quando a produção deste grupo foi concluída
+  quantidadeMaxima?: number; // Quantidade máxima por lote de impressão (do GrupoImpressao original)
+  pedidoId: string; // Adicionado para referência ao pedido
+  pedidoNumero: string; // Adicionado para referência ao número do pedido
+  timestamp: Timestamp | FieldValue; // Adicionado para registrar a data de criação do grupo otimizado
 }
 
 export interface Historico {
@@ -298,7 +363,7 @@ export interface Parte {
 
 export interface LancamentoProduto {
   id: string;
-  tipoProduto: 'partes' | 'pecas' | 'modelos' | 'kits';
+  tipoProduto: 'parte' | 'peca' | 'modelo' | 'kit';
   produtoId: string;
   tipoMovimento: 'entrada' | 'saida' | 'ajuste';
   usuario: string;
@@ -306,7 +371,7 @@ export interface LancamentoProduto {
   data?: Timestamp;
   locais: {
     recipienteId?: string;
-    divisao?: { h: number; v: number };
+    divisao?: { h: number; v: number } | null; // Allow null
     quantidade: number;
     localId?: string;
   }[];
@@ -322,7 +387,7 @@ export interface LancamentoInsumo {
   data?: Timestamp; // Renamed from dataLancamento for consistency
   origem?: string; // Made optional
   detalhes?: string; // Renamed from observacao for consistency
-  locais?: PosicaoEstoque[];
+  locais?: (PosicaoEstoque & { divisao?: { h: number; v: number } | null; })[]; // Allow null for divisao
 }
 
 export interface Produto {
@@ -345,8 +410,21 @@ export interface Servico {
 
 export interface LancamentoServico {
   servicoId: string;
-  pedidoId: string;
+  pedidoId?: string; // Made optional as it might be linked to an optimized group instead
+  optimizedGroupId?: string; // New field for linking to optimized production groups
   quantidade: number;
   data: Timestamp;
   usuario: string;
+}
+
+export interface ItemToDebit {
+  id: string;
+  nome: string;
+  quantidadePedido: number;
+  estoqueAtualItem: number;
+  localEstoqueItem: PosicaoEstoque[];
+  type: 'parte' | 'peca' | 'modelo' | 'kit' | 'insumo';
+  pedidoId?: string;
+  groupId?: string;
+  debitType?: 'full' | 'available';
 }
