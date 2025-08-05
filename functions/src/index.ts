@@ -691,27 +691,22 @@ export const processLancamentoProducao = onDocumentCreated({
       functions.logger.error(`[${lancamentoId}] Error processing criacao_pedido event:`, error);
     }
   } else if (tipoEvento === 'iniciar_producao') {
-    const { originalGroupIds } = payload;
+    const { optimizedGroupId } = payload;
 
-    if (!originalGroupIds || !Array.isArray(originalGroupIds) || originalGroupIds.length === 0) {
-      functions.logger.error(`[${lancamentoId}] Invalid payload for iniciar_producao event: Missing or empty originalGroupIds.`);
+    if (!optimizedGroupId) {
+      functions.logger.error(`[${lancamentoId}] Invalid payload for iniciar_producao event: Missing optimizedGroupId.`);
       return;
     }
 
     try {
-      const batch = db.batch();
-      for (const groupId of originalGroupIds) {
-        const groupRef = db.collection('gruposProducaoOtimizados').doc(groupId);
-        batch.set(groupRef, {
-          status: 'em_producao',
-          startedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-        functions.logger.log(`[${lancamentoId}] Added update for production group ${groupId} to batch.`);
-      }
-      await batch.commit();
-      functions.logger.log(`[${lancamentoId}] Successfully updated ${originalGroupIds.length} production groups to 'em_producao'.`);
+      const groupRef = db.collection('gruposProducaoOtimizados').doc(optimizedGroupId);
+      await groupRef.update({
+        status: 'em_producao',
+        startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      functions.logger.log(`[${lancamentoId}] Successfully updated production group ${optimizedGroupId} to 'em_producao'.`);
     } catch (error) {
-      functions.logger.error(`[${lancamentoId}] Error updating production group statuses:`, error);
+      functions.logger.error(`[${lancamentoId}] Error updating production group status for ${optimizedGroupId}:`, error);
     }
   } else {
     functions.logger.log(`[${lancamentoId}] Event type is not 'criacao_pedido' or 'iniciar_producao'. Skipping.`);
