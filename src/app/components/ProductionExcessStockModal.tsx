@@ -10,7 +10,7 @@ interface ProductionExcessStockModalProps {
   isOpen: boolean;
   onClose: () => void;
   onLaunchSuccess: () => void;
-  onSendToAssembly: () => void; // New prop for assembly logic
+  onSendToAssembly: (partId: string, quantity: number) => void; // New prop for assembly logic
   partData: {
     id: string;
     nome: string;
@@ -263,7 +263,7 @@ const ProductionExcessStockModal: React.FC<ProductionExcessStockModalProps> = ({
               <button type="button" className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50" onClick={onClose} disabled={loading}>
                 Cancelar
               </button>
-              <button type="button" onClick={onSendToAssembly} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400" disabled={loading}>
+              <button type="button" onClick={() => onSendToAssembly(partData.id, partData.quantidade)} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400" disabled={loading}>
                 Enviar para Montagem
               </button>
               <button type="submit" className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400" disabled={loading || !divisao}>

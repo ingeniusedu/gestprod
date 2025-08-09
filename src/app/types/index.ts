@@ -104,7 +104,7 @@ export interface OptimizedInsumoItem extends ProductionGroupOutroInsumo {
 
 export interface OptimizedGroup {
   id: string;
-  partesNoGrupo: { [key: string]: { nome: string; quantidade: number; estoqueAtual?: number; quantidadeNecessaria?: number; } };
+  partesNoGrupo: { [key: string]: { nome: string; quantidade: number; estoqueAtual?: number; quantidadeNecessaria?: number; hasAssembly?: boolean; } };
   totalPartsQuantity: number; // Renamed from quantidadeTotal
   aggregatedGroupCount: number; // New field to track number of aggregated production groups
   pedidosOrigem: { pedidoId: string; pedidoNumero: string; groupId: string }[];
@@ -406,6 +406,34 @@ export interface Servico {
   nome: string;
   unidade: string;
   custoPorUnidade: number;
+}
+
+export interface RelatorioServico {
+  id: string; // Formato YYYY-MM
+  resumoDiario: {
+    [dia: string]: { // Formato DD
+      [servicoId: string]: {
+        totalQuantidade: number;
+        totalCusto: number;
+      };
+    };
+  };
+  resumoSemanal: {
+    [semana: string]: { // Formato YYYY-WW (ex: 2023-42)
+      [servicoId: string]: {
+        totalQuantidade: number;
+        totalCusto: number;
+      };
+    };
+  };
+  resumoMensal: {
+    [servicoId: string]: {
+      totalQuantidade: number;
+      totalCusto: number;
+    };
+  };
+  lancamentosProcessadosIds: string[]; // Para garantir a idempotência
+  updatedAt: FieldValue;
 }
 
 export interface LancamentoServico {

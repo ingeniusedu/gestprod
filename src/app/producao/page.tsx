@@ -9,6 +9,7 @@ import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoq
 import { LocalProduto, LocalInsumo, Recipiente } from '../types/mapaEstoque';
 import { v4 as uuidv4 } from 'uuid';
 import ProductionLaunchModal from '../components/ProductionLaunchModal';
+import ProductionConclusionModal, { ConcludeData } from '../components/ProductionConclusionModal';
 import StockSelectionModal from '../components/StockSelectionModal';
 import ProductionExcessStockModal from '../components/ProductionExcessStockModal'; // Import new modal
 import InsumoSelectionModal from '../components/InsumoSelectionModal';
@@ -47,6 +48,17 @@ export default function Producao() {
     status: ProductionGroup['status']; // Add status property
   }
 
+  interface ConcludeData {
+    group: OptimizedGroup; // Agora passamos o grupo completo
+    producedParts: {
+      parteId: string;
+      quantidadeProduzida: number;
+      pecaId?: string; // Add pecaId here
+      destinoExcedente?: 'estoque' | 'montagem';
+      localEstoqueId?: string;
+    }[];
+  }
+
   // Helper function to calculate the effective quantity of a parent product fulfilled by its components
   const calculateEffectiveQuantityFulfilledByComponents = (
     produto: PedidoProduto,
@@ -73,7 +85,7 @@ export default function Producao() {
       }
     } else if (produto.tipo === 'modelo' && produto.atendimentoEstoqueDetalhado.pecasAtendidas) {
       const modeloDetails = allModelsData.find(m => m.id === produto.produtoId);
-      if (!modeloDetails) return 0;
+      if (!modeloDetails) return 0; // Corrected: return 0 if not found
 
       for (const pecaRef of modeloDetails.pecas) {
         const pecaAttended = produto.atendimentoEstoqueDetalhado.pecasAtendidas.find(p => p.pecaId === pecaRef.pecaId);
@@ -86,7 +98,7 @@ export default function Producao() {
       }
     } else if (produto.tipo === 'peca' && produto.atendimentoEstoqueDetalhado.partesAtendidas) {
       const pecaDetails = allPecasData.find(p => p.id === produto.produtoId);
-      if (!pecaDetails) return 0;
+      if (!pecaDetails) return 0; // Corrected: return 0 if not found
 
       // Collect all parts needed for this peca from its impression groups
       const allPartsNeededForPeca: { parteId: string; quantidade: number }[] = [];
@@ -134,10 +146,12 @@ export default function Producao() {
   const [recipientes, setRecipientes] = useState<Recipiente[]>([]);
 
   const [isLaunchModalOpen, setIsLaunchModalOpen] = useState(false);
+  const [isConclusionModalOpen, setIsConclusionModalOpen] = useState(false);
   const [selectedProductionGroup, setSelectedProductionGroup] = useState<OptimizedGroup | null>(null);
+  const [selectedGroupForConclusion, setSelectedGroupForConclusion] = useState<OptimizedGroup | null>(null);
   const [isStockSelectionModalOpen, setIsStockSelectionModalOpen] = useState(false);
   const [isExcessModalOpen, setIsExcessModalOpen] = useState(false);
-  const [excessPartData, setExcessPartData] = useState<{ id: string; nome: string; sku: string; quantidade: number; pecaTipo: Peca['tipoPeca'] } | null>(null);
+  const [excessPartData, setExcessPartData] = useState<{ id: string; nome: string; sku: string; quantidade: number; pecaTipo: Peca['tipoPeca']; pecaId?: string; } | null>(null);
   const [isPackagingInsumoModalOpen, setIsPackagingInsumoModalOpen] = useState(false);
   const [selectedPedidoForPackaging, setSelectedPedidoForPackaging] = useState<Pedido | null>(null);
   const [packagingTime, setPackagingTime] = useState<Record<string, number>>({});
@@ -768,7 +782,7 @@ export default function Producao() {
         const updatedProdutos = pedidoData.produtos.map(produto => {
           if (produto.gruposImpressaoProducao) {
             const updatedGruposImpressaoProducao = produto.gruposImpressaoProducao.map(group => {
-              if (groupIdsToUpdate.includes(group.id)) {
+              if (group.id && groupIdsToUpdate.includes(group.id)) {
                 // This group is part of the optimized group being launched
                 if (group.status === 'aguardando') { // Only process groups that are waiting
                   const newStatus = optimizedGroup.partesProntas ? 'produzido' : 'em_producao';
@@ -812,22 +826,28 @@ export default function Producao() {
   };
 
   const handleStartOptimizedProduction = async (group: OptimizedGroup) => {
+    if (!auth.currentUser) {
+      alert("Você precisa estar logado para iniciar a produção.");
+      return;
+    }
     try {
-        const optimizedGroupRef = doc(db, 'gruposProducaoOtimizados', group.id);
-        await updateDoc(optimizedGroupRef, {
-            status: 'em_producao',
-            startedAt: Timestamp.now(),
-        });
+      await addDoc(collection(db, 'lancamentosProducao'), {
+        tipoEvento: 'iniciar_producao',
+        payload: {
+          optimizedGroupId: group.id,
+        },
+        timestamp: serverTimestamp(),
+        usuario: auth.currentUser.uid,
+      });
 
-        // Propagate status to original production groups in pedidos
-        await updateOriginalProductionGroupStatuses(group);
-
-        alert("Produção iniciada com sucesso! O status será atualizado em breve.");
-        await refetchAllData(); // Refresh data after successful launch
+      alert("Solicitação para iniciar produção enviada com sucesso! O status será atualizado em breve.");
+      // The listener on the production groups should update the UI automatically.
+      // A manual refetch can be added if the UI update is not fast enough.
+      // await refetchAllData();
 
     } catch (error) {
-        console.error("Erro ao iniciar produção otimizada: ", error);
-        alert("Ocorreu um erro ao iniciar a produção. Verifique o console para mais detalhes.");
+      console.error("Erro ao solicitar início de produção otimizada: ", error);
+      alert("Ocorreu um erro ao solicitar o início da produção. Verifique o console para mais detalhes.");
     }
   };
 
@@ -946,11 +966,13 @@ export default function Producao() {
           };
         }
 
-        // Enrich filamentosNecessarios with estoqueAtual
+        // Enrich filamentosNecessarios with estoqueAtual and nome
         const filamentosNecessarios = group.filamentosNecessarios.map(filamento => {
           const { estoqueTotal } = getStockForProduct(filamento.id, 'insumo', pecasData, partesData, allInsumosData, modelsData, kitsData, filamentGroupsData, locaisProdutosData, locaisInsumosData, recipientesData);
+          const filamentGroupDetails = filamentGroupsData.find(fg => fg.id === filamento.id);
           return {
             ...filamento,
+            nome: filamentGroupDetails?.nome || filamento.nome || 'Desconhecido',
             estoqueAtual: estoqueTotal,
             quantidadeNecessaria: filamento.quantidade, // Assuming quantidade in filamentosNecessarios is the necessary quantity
           };
@@ -1144,14 +1166,7 @@ export default function Producao() {
 
   const updateProductionGroupStatus = async (pedidoId: string, groupId: string, newStatus: ProductionGroup['status']) => {
     try {
-        // Find the OptimizedGroup that contains this original groupId
-        let targetOptimizedGroup: OptimizedGroup | undefined;
-        for (const og of Array.from(optimizedGroups.values())) {
-            if (og.pedidosOrigem.some(origem => origem.groupId === groupId)) {
-                targetOptimizedGroup = og;
-                break;
-            }
-        }
+        const targetOptimizedGroup = Array.from(optimizedGroups.values()).find(og => og.pedidosOrigem.some(origem => origem.groupId === groupId));
 
         if (!targetOptimizedGroup) {
             console.error("OptimizedGroup not found for original groupId:", groupId);
@@ -1187,14 +1202,7 @@ export default function Producao() {
     }
 
     try {
-        // Find the OptimizedGroup that contains this original groupId
-        let targetOptimizedGroup: OptimizedGroup | undefined;
-        for (const og of Array.from(optimizedGroups.values())) {
-            if (og.pedidosOrigem.some(origem => origem.groupId === groupId)) {
-                targetOptimizedGroup = og;
-                break;
-            }
-        }
+        const targetOptimizedGroup = Array.from(optimizedGroups.values()).find(og => og.pedidosOrigem.some(origem => origem.groupId === groupId));
 
         if (!targetOptimizedGroup) {
             console.error("OptimizedGroup not found for original groupId:", groupId);
@@ -1303,134 +1311,135 @@ export default function Producao() {
     setIsSummaryLoading(false);
   };
 
-  const handleConcluirImpressao = async (group: OptimizedGroup) => {
+  const handleOpenConclusionModal = (group: OptimizedGroup) => {
+    setSelectedGroupForConclusion(group);
+    setIsConclusionModalOpen(true);
+  };
+
+  const handleConcludeProduction = async (data: ConcludeData) => {
+    if (!auth.currentUser) {
+      alert("Você precisa estar logado para concluir a produção.");
+      return;
+    }
+
     const batch = writeBatch(db);
-    const optimizedGroupRef = doc(db, 'gruposProducaoOtimizados', group.id);
+    const lancamentoProducaoRef = doc(collection(db, 'lancamentosProducao')); // Usar doc(collection(...)) para obter uma referência com ID gerado
+
+    const { group, producedParts } = data;
 
     try {
-        // Debit filamentos
-        for (const filamento of group.filamentosNecessarios) {
-            if (filamento.quantidade > 0) {
-                const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
-                batch.set(lancamentoInsumoRef, cleanObject({
-                    id: uuidv4(),
-                    insumoId: filamento.id,
-                    tipoInsumo: 'filamento',
-                    tipoMovimento: 'saida',
-                    quantidade: filamento.quantidade,
-                    unidadeMedida: 'gramas',
-                    data: Timestamp.now(),
-                    detalhes: `Consumo para grupo de impressão otimizado: ${group.sourceName} (ID: ${group.id})`,
-                    locais: filamento.localEstoqueFilamento || [], // Assuming this property exists on OptimizedFilamentItem
-                }));
-            }
-        }
+      // Documento principal para a Cloud Function processLancamentoProducao
+      batch.set(lancamentoProducaoRef, cleanObject({
+        id: lancamentoProducaoRef.id, // Usar o ID gerado
+        tipoEvento: 'conclusao_impressao',
+        timestamp: serverTimestamp(),
+        usuarioId: auth.currentUser.uid,
+        payload: {
+          optimizedGroupId: group.id,
+          producedParts: producedParts,
+          pedidosOrigem: group.pedidosOrigem, // Passar os pedidos de origem do grupo otimizado
+          sourceName: group.sourceName,
+        },
+      }));
 
-        // Debit other insumos (if applicable for 'impressao' stage)
-        for (const insumo of (group.outrosInsumosNecessarios || [])) {
-            if (insumo.quantidade > 0 && insumo.etapaInstalacao === 'impressao') {
-                const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
-                batch.set(lancamentoInsumoRef, cleanObject({
-                    id: uuidv4(),
-                    insumoId: insumo.id,
-                    tipoInsumo: insumo.tipo as 'material' | 'outros',
-                    tipoMovimento: 'saida',
-                    quantidade: insumo.quantidade,
-                    unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades',
-                    data: Timestamp.now(),
-                    detalhes: `Consumo para grupo de impressão otimizado: ${group.sourceName} (ID: ${group.id})`,
-                    locais: insumo.localEstoqueInsumo || [], // Assuming this property exists on OptimizedInsumoItem
-                }));
-            }
-        }
-
-        // Launch service time (assuming 'impressao_3d' is a service for the whole optimized group)
-        const lancamentoServicoRef = doc(collection(db, 'lancamentoServicos'));
-        batch.set(lancamentoServicoRef, cleanObject({
-            servicoId: 'impressao_3d',
-            optimizedGroupId: String(group.id), // Link to the optimized group
-            quantidade: group.tempoImpressaoGrupo / 60,
+      // Lançar insumos consumidos (filamentos)
+      for (const filamento of group.filamentosNecessarios) {
+        if (filamento.quantidade > 0) {
+          const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
+          batch.set(lancamentoInsumoRef, cleanObject({
+            id: uuidv4(),
+            insumoId: filamento.id,
+            tipoInsumo: 'filamento',
+            tipoMovimento: 'saida',
+            quantidade: filamento.quantidade,
+            unidadeMedida: 'gramas',
             data: Timestamp.now(),
-            usuario: auth.currentUser?.displayName || 'Sistema',
-        }));
-
-        // Update the status of the OptimizedGroup in its collection
-        batch.update(optimizedGroupRef, {
-            status: 'produzido',
-            completedAt: Timestamp.now(),
-        });
-
-        // Now, update the status of all original ProductionGroups linked to this OptimizedGroup
-        // and their parent products in the 'pedidos' collection
-        for (const origem of group.pedidosOrigem) {
-            const pedidoRef = doc(db, 'pedidos', origem.pedidoId);
-            const pedidoDoc = await getDoc(pedidoRef);
-            if (!pedidoDoc.exists()) {
-                console.warn(`Pedido ${origem.pedidoId} não encontrado para atualização.`);
-                continue;
-            }
-            const pedidoData = pedidoDoc.data() as Pedido;
-            let updatedProdutos = pedidoData.produtos.map(produto => {
-                if (produto.gruposImpressaoProducao) {
-                    const updatedGruposImpressaoProducao = produto.gruposImpressaoProducao.map(originalGroup => {
-                        if (originalGroup.id === origem.groupId) {
-                            return {
-                                ...originalGroup,
-                                status: 'produzido', // Mark original group as produced
-                                completedAt: Timestamp.now(),
-                            };
-                        }
-                        return originalGroup;
-                    });
-                    return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao };
-                }
-                return produto;
-            });
-
-            // After updating all relevant groups within a product, check if the product itself is ready
-            updatedProdutos = updatedProdutos.map(produto => {
-                if (produto.gruposImpressaoProducao) {
-                    const allGroupsProducedForThisProduct = produto.gruposImpressaoProducao.every(g => g.status === 'produzido');
-                    if (allGroupsProducedForThisProduct) {
-                        const peca = availablePecas.find(p => p.id === produto.produtoId);
-                        const nextStatusForProduct = peca?.tipoPeca === 'composta_um_grupo_com_montagem' || peca?.tipoPeca === 'composta_multiplos_grupos'
-                            ? 'em_montagem_pecas'
-                            : 'pronto_para_embalagem';
-                        return { ...produto, statusProducaoItem: nextStatusForProduct };
-                    }
-                }
-                return produto;
-            });
-
-            // Update pedido status based on its products
-            let newPedidoStatus = pedidoData.status;
-            const allProductsDone = updatedProdutos.every(p => p.statusProducaoItem === 'concluido' || p.statusProducaoItem === 'pronto_para_embalagem');
-            if (allProductsDone) {
-                newPedidoStatus = 'processando_embalagem';
-            } else {
-                const anyInProduction = updatedProdutos.some(p =>
-                    p.statusProducaoItem === 'em_producao' ||
-                    p.statusProducaoItem === 'em_montagem_pecas' ||
-                    p.statusProducaoItem === 'em_montagem_modelos' ||
-                    p.gruposImpressaoProducao?.some(g => g.status === 'em_producao')
-                );
-                if (anyInProduction) {
-                    newPedidoStatus = 'em_producao';
-                }
-            }
-
-            batch.update(pedidoRef, { produtos: cleanObject(updatedProdutos), status: newPedidoStatus });
+            detalhes: `Consumo para grupo de impressão otimizado: ${group.sourceName} (ID: ${group.id})`,
+            locais: filamento.localEstoqueFilamento || [], // Assumindo que esta propriedade existe e contém as posições de estoque
+            pedidoId: group.pedidosOrigem[0]?.pedidoId, // Vincular ao primeiro pedido de origem para contexto
+          } as LancamentoInsumo)); // Type assertion
         }
+      }
 
-        await batch.commit();
-        alert("Impressão concluída com sucesso! O status será atualizado em breve.");
-        refetchAllData();
+      // Lançar outros insumos consumidos (se aplicável para a etapa de impressão)
+      for (const insumo of (group.outrosInsumosNecessarios || [])) {
+        if (insumo.quantidade > 0 && insumo.etapaInstalacao === 'impressao') {
+          const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
+          batch.set(lancamentoInsumoRef, cleanObject({
+            id: uuidv4(),
+            insumoId: insumo.id,
+            tipoInsumo: insumo.tipo as 'material' | 'outros',
+            tipoMovimento: 'saida',
+            quantidade: insumo.quantidade,
+            unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades', // Ajustar unidade conforme tipo
+            data: Timestamp.now(),
+            detalhes: `Consumo para grupo de impressão otimizado: ${group.sourceName} (ID: ${group.id})`,
+            locais: insumo.localEstoqueInsumo || [], // Assumindo que esta propriedade existe
+            pedidoId: group.pedidosOrigem[0]?.pedidoId, // Vincular ao primeiro pedido de origem para contexto
+          } as LancamentoInsumo)); // Type assertion
+        }
+      }
 
+      // Lançar tempo de serviço (impressao_3d)
+      if (group.tempoImpressaoGrupo > 0) {
+        const lancamentoServicoRef = doc(collection(db, 'lancamentosServicos'));
+        batch.set(lancamentoServicoRef, cleanObject({
+          servicoId: 'impressao_3d', // ID do serviço de impressão 3D
+          optimizedGroupId: group.id, // Vincular ao grupo otimizado
+          quantidade: group.tempoImpressaoGrupo / 60, // Converter minutos para horas
+          data: Timestamp.now(),
+          usuario: auth.currentUser?.displayName || 'Sistema',
+          pedidoId: group.pedidosOrigem[0]?.pedidoId, // Vincular ao primeiro pedido de origem para contexto
+        } as LancamentoServico)); // Type assertion
+      }
+
+      // Lançar produtos produzidos (partes)
+      for (const parteProduzida of producedParts) {
+        if (parteProduzida.quantidadeProduzida > 0) {
+          const lancamentoProdutoRef = doc(collection(db, 'lancamentosProdutos'));
+          const parteInfo = group.partesNoGrupo[parteProduzida.parteId];
+          const expectedQuantity = parteInfo.quantidade;
+          const isExcess = parteProduzida.quantidadeProduzida > expectedQuantity;
+
+          let locaisParaLancamento: LancamentoProduto['locais'] = [];
+
+          if (isExcess && parteProduzida.destinoExcedente === 'estoque' && parteProduzida.localEstoqueId) {
+            locaisParaLancamento.push({
+              localId: parteProduzida.localEstoqueId,
+              recipienteId: '', // Pode ser vazio se o local não exigir recipiente específico
+              divisao: null,
+              quantidade: parteProduzida.quantidadeProduzida - expectedQuantity, // Apenas o excedente
+            });
+          } else if (!isExcess || parteProduzida.destinoExcedente === 'montagem') {
+            // Não faz nada aqui para a quantidade esperada ou excedente para montagem.
+            // A Cloud Function processLancamentoProducao (Fase 2.4/2.5) lidará com o destino lógico.
+            continue; // Pula para a próxima parte
+          }
+
+          if (locaisParaLancamento.length > 0) {
+            batch.set(lancamentoProdutoRef, cleanObject({
+              id: uuidv4(),
+              produtoId: parteProduzida.parteId,
+              tipoProduto: 'parte', // Sempre 'parte' para este contexto
+              tipoMovimento: 'entrada',
+              usuario: auth.currentUser?.displayName || 'Sistema',
+              observacao: `Conclusão de produção - Excedente para estoque do grupo otimizado: ${group.sourceName} (ID: ${group.id})`,
+              data: Timestamp.now(),
+              locais: locaisParaLancamento,
+            } as LancamentoProduto));
+          }
+        }
+      }
+
+      await batch.commit();
+      alert("Evento de conclusão de produção disparado com sucesso! O status será atualizado em breve.");
+      setIsConclusionModalOpen(false);
+      refetchAllData(); // Recarregar dados para refletir as mudanças
     } catch (error) {
-        console.error("Erro ao concluir impressão:", error);
-        alert("Falha ao concluir a impressão. Verifique o console.");
+      console.error("Erro ao disparar evento de conclusão de produção:", error);
+      alert("Ocorreu um erro ao concluir a produção. Verifique o console para mais detalhes.");
     }
-};
+  };
 
   const handleSendToAssembly = async (produtoPedidoId: string, parteId: string, quantidade: number) => {
     try {
@@ -1619,7 +1628,8 @@ export default function Producao() {
     // 2. Calculate status for Partes (base of the hierarchy)
     allRequiredItems.forEach(({ product, tipo }) => {
       if (tipo === 'parte' && product) {
-        const summaryItem = summaryMap.get(product.sku || product.id)!;
+        const parteProduct = product as Parte; // Explicitly cast to Parte
+        const summaryItem = summaryMap.get(parteProduct.sku || parteProduct.id)!;
         summaryItem.aguardando = 0;
         summaryItem.emProducao = 0;
         summaryItem.finalizado = 0;
@@ -1628,15 +1638,19 @@ export default function Producao() {
           if (p.status !== 'concluido' && p.status !== ('cancelado' as any)) {
             p.produtos.forEach(prod => {
               prod.gruposImpressaoProducao?.forEach(g => {
-                // Check if the current part (product.id) exists in partesNoGrupo for this production group
-                if (g.partesNoGrupo && g.partesNoGrupo[product.id]) {
-                  const parteInfo = g.partesNoGrupo[product.id];
-                  if (g.status === 'aguardando') {
-                    summaryItem.aguardando += parteInfo.quantidade;
-                  } else if (g.status === 'em_producao') {
-                    summaryItem.emProducao += parteInfo.quantidade;
-                  } else if (g.status === 'produzido') {
-                    summaryItem.finalizado += parteInfo.quantidade;
+                // Check if the current part (parteProduct.id) exists in partesNoGrupo for this production group
+                if (g.partesNoGrupo && parteProduct.id) { // Ensure parteProduct.id exists
+                  const parteIdAsString: string = parteProduct.id; // Explicitly type as string
+                  // Explicitly check if the property exists and then access it
+                  if (Object.prototype.hasOwnProperty.call(g.partesNoGrupo, parteIdAsString)) {
+                    const parteInfo = g.partesNoGrupo[parteIdAsString] as typeof g.partesNoGrupo[string]; // Cast to ensure correct type
+                    if (g.status === 'aguardando') {
+                      summaryItem.aguardando += parteInfo.quantidade;
+                    } else if (g.status === 'em_producao') {
+                      summaryItem.emProducao += parteInfo.quantidade;
+                    } else if (g.status === 'produzido') {
+                      summaryItem.finalizado += parteInfo.quantidade;
+                    }
                   }
                 }
               });
@@ -1960,13 +1974,16 @@ export default function Producao() {
                     </div>
                   </div>
                   <div className="flex space-x-2 mt-4">
-                    <button onClick={() => revertProductionGroupStatus(group.pedidosOrigem[0].pedidoId, group.id as string, 'em_producao')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700">
+                    <button onClick={() => revertProductionGroupStatus(group.pedidosOrigem[0].pedidoId, group.id, 'em_producao')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700">
                       <XCircle className="h-3 w-3 mr-1" /> Reverter
                     </button>
-                    <button onClick={() => updateProductionGroupStatus(group.pedidosOrigem[0].pedidoId, group.id as string, 'aguardando')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-orange-600 hover:bg-orange-700">
+                    <button onClick={() => updateProductionGroupStatus(group.pedidosOrigem[0].pedidoId, group.id, 'aguardando')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-orange-600 hover:bg-orange-700">
                       <Pause className="h-3 w-3 mr-1" /> Pausar
                     </button>
-                    <button onClick={() => handleConcluirImpressao(group)} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
+                    <button onClick={() => {
+                      setSelectedGroupForConclusion(group);
+                      setIsConclusionModalOpen(true);
+                    }} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
                       <CheckCircle className="h-3 w-3 mr-1" /> Concluir Impressão
                     </button>
                   </div>
@@ -2112,6 +2129,15 @@ export default function Producao() {
         onLaunchSuccess={handleLaunchSuccess}
       />
 
+      <ProductionConclusionModal
+        isOpen={isConclusionModalOpen}
+        onClose={() => setIsConclusionModalOpen(false)}
+        group={selectedGroupForConclusion}
+        availablePecas={availablePecas}
+        locaisProdutos={locaisProdutos}
+        onConclude={handleConcludeProduction}
+      />
+
       {isExcessModalOpen && excessPartData && (
         <ProductionExcessStockModal
           isOpen={isExcessModalOpen}
@@ -2122,7 +2148,17 @@ export default function Producao() {
             setIsExcessModalOpen(false);
             refetchAllData();
           }}
-          onSendToAssembly={() => handleSendToAssembly(excessPartData.id, excessPartData.id, excessPartData.quantidade)}
+          onSendToAssembly={(partId, quantity) => {
+            // The pecaId is now available in excessPartData.pecaId
+            // We need to ensure excessPartData.pecaId is passed as the first argument
+            // and partId as the second argument to handleSendToAssembly.
+            if (excessPartData?.pecaId) {
+              handleSendToAssembly(excessPartData.pecaId, partId, quantity);
+            } else {
+              console.error("Peca ID not found for excess part. Cannot send to assembly.");
+              alert("Erro: ID da peça não encontrado para enviar excedente para montagem.");
+            }
+          }}
         />
       )}
 

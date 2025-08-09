@@ -24,7 +24,8 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
     match /pedidos/{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, create, update: if request.auth != null;
+      allow delete: if false; // Proibir exclusão de pedidos
     }
     match /locaisProdutos/{document=**} {
       allow read, write: if request.auth != null;
@@ -50,8 +51,22 @@ service cloud.firestore {
     match /locaisInsumos/{document=**} {
       allow read, write: if request.auth != null;
     }
-    match /lancamentoServicos/{docId} {
-      allow write: if request.auth != null;
+    // Permite que usuários autenticados criem lançamentos de serviço
+    match /lancamentosServicos/{lancamentoId} {
+      allow create: if request.auth != null;
+      allow read, write: if false; // Apenas a função pode alterar/ler
+    }
+
+    // A coleção de relatórios só pode ser lida pelos clientes (e escrita pelas funções)
+    match /relatoriosServicos/{relatorioId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Apenas funções podem escrever
+    }
+
+    // A coleção de serviços pode ser lida por todos
+    match /servicos/{servicoId} {
+      allow read: if true;
+      allow write: if false; // Apenas administradores podem definir serviços
     }
     match /lancamentosProducao/{document=**} {
       allow read, write: if request.auth != null;

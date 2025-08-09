@@ -1,7 +1,9 @@
 import {onDocumentWritten, onDocumentCreated} from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 import * as functions from "firebase-functions";
-import { PosicaoEstoque, Pedido, GrupoImpressao, ProductionGroup, Peca, Modelo, Kit, PecaParte, PecaInsumo } from "../../src/app/types"; // Import necessary types
+import { PosicaoEstoque, Pedido, GrupoImpressao, ProductionGroup, Peca, Modelo, Kit, PecaParte, PecaInsumo, LancamentoServico, Servico } from "../../src/app/types"; // Import necessary types
+import { getWeek } from 'date-fns';
+
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -708,8 +710,142 @@ export const processLancamentoProducao = onDocumentCreated({
     } catch (error) {
       functions.logger.error(`[${lancamentoId}] Error updating production group status for ${optimizedGroupId}:`, error);
     }
+  } else if (tipoEvento === 'conclusao_impressao') {
+    const { optimizedGroupId, producedParts, pedidosOrigem, sourceName } = payload;
+
+    if (!optimizedGroupId || !producedParts || !pedidosOrigem || !sourceName) {
+      functions.logger.error(`[${lancamentoId}] Invalid payload for conclusao_impressao event: Missing required fields.`);
+      return;
+    }
+
+    try {
+      const batch = db.batch();
+
+      // 1. Atualizar o status do OptimizedGroup para 'produzido'
+      const optimizedGroupRef = db.collection('gruposProducaoOtimizados').doc(optimizedGroupId);
+      batch.update(optimizedGroupRef, {
+        status: 'produzido',
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      functions.logger.log(`[${lancamentoId}] OptimizedGroup ${optimizedGroupId} status updated to 'produzido'.`);
+
+      // Fetch all pecas to determine tipoPeca for status updates
+      const pecasSnapshot = await db.collection('pecas').get();
+      const allPecas = pecasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Peca[];
+
+      // 2. Iterar sobre os pedidos de origem e atualizar os status
+      for (const origem of pedidosOrigem) {
+        const pedidoRef = db.collection('pedidos').doc(origem.pedidoId);
+        const pedidoDoc = await pedidoRef.get();
+
+        if (!pedidoDoc.exists) {
+          functions.logger.warn(`[${lancamentoId}] Pedido ${origem.pedidoId} não encontrado para atualização.`);
+          continue;
+        }
+
+        const pedidoData = pedidoDoc.data() as Pedido;
+        let updatedProdutosPromises = pedidoData.produtos.map(async (produto) => { // Made the map callback async
+          if (produto.gruposImpressaoProducao) {
+            const updatedGruposImpressaoProducao = produto.gruposImpressaoProducao.map(originalGroup => {
+              if (originalGroup.id === origem.groupId) {
+                return {
+                  ...originalGroup,
+                  status: 'produzido', // Marcar grupo original como produzido
+                  completedAt: admin.firestore.FieldValue.serverTimestamp(),
+                };
+              }
+              return originalGroup;
+            });
+
+            // Recalcular statusProducaoItem para este produto
+            const allGroupsProducedForThisProduct = updatedGruposImpressaoProducao.every(g => g.status === 'produzido');
+            if (allGroupsProducedForThisProduct) {
+              const peca = allPecas.find(p => p.id === produto.produtoId);
+              let nextStatusForProduct: Pedido['produtos'][number]['statusProducaoItem'] = 'pronto_para_embalagem';
+
+              // Check if any part in the original production group requires assembly
+              const originalOptimizedGroup = await optimizedGroupRef.get();
+              const originalOptimizedGroupData = originalOptimizedGroup.data() as ProductionGroup;
+              const hasAssemblyParts = Object.values(originalOptimizedGroupData.partesNoGrupo).some(p => p.hasAssembly);
+
+              if (peca?.tipoPeca === 'composta_um_grupo_com_montagem' || peca?.tipoPeca === 'composta_multiplos_grupos' || hasAssemblyParts) {
+                nextStatusForProduct = 'em_montagem_pecas';
+              }
+              // Lógica para excedente destinado à montagem
+              interface ProducedPart {
+                parteId: string;
+                quantidadeProduzida: number;
+                destinoExcedente?: 'montagem' | 'estoque';
+              }
+              const partesExcedentesParaMontagem = (producedParts as ProducedPart[]).filter(
+                (p: ProducedPart) => p.destinoExcedente === 'montagem' && p.parteId in originalOptimizedGroupData.partesNoGrupo
+              );
+
+              if (partesExcedentesParaMontagem.length > 0) {
+                let currentAtendimentoEstoqueDetalhado = produto.atendimentoEstoqueDetalhado || {};
+                let currentPartesAtendidas = currentAtendimentoEstoqueDetalhado.partesAtendidas || [];
+
+                for (const excedenteParte of partesExcedentesParaMontagem) {
+                  const parteInfo = originalOptimizedGroupData.partesNoGrupo[excedenteParte.parteId];
+                  const expectedQuantity = parteInfo.quantidade;
+                  const excessQuantity = excedenteParte.quantidadeProduzida - expectedQuantity;
+
+                  if (excessQuantity > 0) {
+                    const existingEntryIndex = currentPartesAtendidas.findIndex(
+                      (item: { parteId: string; }) => item.parteId === excedenteParte.parteId
+                    );
+
+                    if (existingEntryIndex > -1) {
+                      currentPartesAtendidas[existingEntryIndex].quantidade += excessQuantity;
+                    } else {
+                      currentPartesAtendidas.push({ parteId: excedenteParte.parteId, quantidade: excessQuantity });
+                    }
+                  }
+                }
+                currentAtendimentoEstoqueDetalhado = {
+                  ...currentAtendimentoEstoqueDetalhado,
+                  partesAtendidas: currentPartesAtendidas,
+                };
+                return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao, statusProducaoItem: nextStatusForProduct, atendimentoEstoqueDetalhado: currentAtendimentoEstoqueDetalhado };
+              }
+
+              return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao, statusProducaoItem: nextStatusForProduct }; // Retorno final do map
+            }
+            return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao };
+          }
+          return produto;
+        });
+
+        let updatedProdutos = await Promise.all(updatedProdutosPromises);
+
+        // Recalcular status geral do pedido
+        let newPedidoStatus = pedidoData.status;
+        const allProductsDone = updatedProdutos.every(p => p.statusProducaoItem === 'concluido' || p.statusProducaoItem === 'pronto_para_embalagem');
+        if (allProductsDone) {
+          newPedidoStatus = 'processando_embalagem';
+        } else {
+          const anyInProduction = updatedProdutos.some(p =>
+            p.statusProducaoItem === 'em_producao' ||
+            p.statusProducaoItem === 'em_montagem_pecas' ||
+            p.statusProducaoItem === 'em_montagem_modelos' ||
+            p.gruposImpressaoProducao?.some(g => g.status === 'em_producao')
+          );
+          if (anyInProduction) {
+            newPedidoStatus = 'em_producao';
+          }
+        }
+
+        batch.update(pedidoRef, { produtos: updatedProdutos, status: newPedidoStatus });
+      }
+
+      await batch.commit();
+      functions.logger.log(`[${lancamentoId}] Successfully processed conclusao_impressao event for optimized group ${optimizedGroupId}.`);
+
+    } catch (error) {
+      functions.logger.error(`[${lancamentoId}] Error processing conclusao_impressao event for optimized group ${optimizedGroupId}:`, error);
+    }
   } else {
-    functions.logger.log(`[${lancamentoId}] Event type is not 'criacao_pedido' or 'iniciar_producao'. Skipping.`);
+    functions.logger.log(`[${lancamentoId}] Event type is not 'criacao_pedido', 'iniciar_producao', or 'conclusao_impressao'. Skipping.`);
     return;
   }
 });
@@ -901,5 +1037,91 @@ export const processLancamentoInsumo = onDocumentCreated({
         }
     } catch (error) {
         functions.logger.error(`[${lancamentoId}] Transaction failed for insumo ${insumoId}:`, error);
+    }
+});
+
+// =================================================================================================
+// NEW ARCHITECTURE FUNCTION - processarLancamentoServico
+// =================================================================================================
+export const processarLancamentoServico = onDocumentCreated({
+    document: "lancamentosServicos/{lancamentoId}",
+    region: "us-central1",
+}, async (event) => {
+    const FUNCTION_VERSION = "1.0.0";
+    const lancamentoId = event.params.lancamentoId;
+    const lancamento = event.data?.data() as LancamentoServico;
+
+    functions.logger.log(`[${lancamentoId}] TRIGGERED: processarLancamentoServico v${FUNCTION_VERSION}.`);
+
+    if (!lancamento) {
+        functions.logger.error(`[${lancamentoId}] Document data is empty. Aborting.`);
+        return;
+    }
+
+    const { servicoId, quantidade, data } = lancamento;
+
+    if (!servicoId || !quantidade || !data) {
+        functions.logger.error(`[${lancamentoId}] Invalid lancamento data: Missing servicoId, quantidade, or data.`);
+        return;
+    }
+
+    try {
+        // 1. Get service cost
+        const servicoRef = db.collection("servicos").doc(servicoId);
+        const servicoDoc = await servicoRef.get();
+        if (!servicoDoc.exists) {
+            functions.logger.error(`[${lancamentoId}] Service with ID ${servicoId} not found.`);
+            return;
+        }
+        const servico = servicoDoc.data() as Servico;
+        const custoTotalLancamento = servico.custoPorUnidade * quantidade;
+
+        // 2. Prepare date formats
+        const date = data.toDate();
+        const reportId = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`; // YYYY-MM
+        const dayKey = String(date.getDate()).padStart(2, '0'); // DD
+        const weekKey = `${date.getFullYear()}-${getWeek(date, { weekStartsOn: 1 })}`; // YYYY-WW
+
+        // 3. Run transaction
+        const reportRef = db.collection("relatoriosServicos").doc(reportId);
+
+        await db.runTransaction(async (transaction) => {
+            const reportDoc = await transaction.get(reportRef);
+
+            if (reportDoc.exists) {
+                const processedIds = reportDoc.data()?.lancamentosProcessadosIds || [];
+                if (processedIds.includes(lancamentoId)) {
+                    functions.logger.warn(`[${lancamentoId}] Lancamento already processed. Skipping.`);
+                    return;
+                }
+            }
+
+            // Use dot notation for nested field updates
+            const dailyQtyPath = `resumoDiario.${dayKey}.${servicoId}.totalQuantidade`;
+            const dailyCostPath = `resumoDiario.${dayKey}.${servicoId}.totalCusto`;
+            const weeklyQtyPath = `resumoSemanal.${weekKey}.${servicoId}.totalQuantidade`;
+            const weeklyCostPath = `resumoSemanal.${weekKey}.${servicoId}.totalCusto`;
+            const monthlyQtyPath = `resumoMensal.${servicoId}.totalQuantidade`;
+            const monthlyCostPath = `resumoMensal.${servicoId}.totalCusto`;
+
+            const updateData = {
+                [dailyQtyPath]: admin.firestore.FieldValue.increment(quantidade),
+                [dailyCostPath]: admin.firestore.FieldValue.increment(custoTotalLancamento),
+                [weeklyQtyPath]: admin.firestore.FieldValue.increment(quantidade),
+                [weeklyCostPath]: admin.firestore.FieldValue.increment(custoTotalLancamento),
+                [monthlyQtyPath]: admin.firestore.FieldValue.increment(quantidade),
+                [monthlyCostPath]: admin.firestore.FieldValue.increment(custoTotalLancamento),
+                lancamentosProcessadosIds: admin.firestore.FieldValue.arrayUnion(lancamentoId),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                id: reportId, // Ensure the ID is set
+            };
+
+            transaction.set(reportRef, updateData, { merge: true });
+        });
+
+        functions.logger.log(`[${lancamentoId}] Successfully processed service launch and updated report ${reportId}.`);
+
+    } catch (error) {
+        functions.logger.error(`[${lancamentoId}] Error processing service launch:`, error);
     }
 });
