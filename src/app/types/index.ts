@@ -116,6 +116,9 @@ export interface OptimizedGroup {
   insumosProntos: boolean;
   partesProntas: boolean;
   status: ProductionGroup['status']; // Add status property
+  parentPecaId?: string;
+  parentModeloId?: string | null;
+  parentKitId?: string | null;
 }
 
 export interface Peca {
@@ -205,7 +208,7 @@ export interface Pedido {
     // e não mais armazenado diretamente aqui.
     // Podemos manter um status de alto nível para exibição rápida, mas ele seria atualizado por uma Cloud Function
     // que agrega o status das tarefas de produção vinculadas.
-    statusProducaoItem?: 'aguardando_producao' | 'em_producao' | 'produzido' | 'em_montagem_pecas' | 'em_montagem_modelos' | 'pronto_para_embalagem' | 'concluido' | 'montado'; // Added 'montado'
+    statusProducaoItem?: 'aguardando_producao' | 'em_producao' | 'produzido' | 'em_montagem_pecas' | 'em_montagem_modelos' | 'em_montagem_kits' | 'pronto_para_embalagem' | 'concluido' | 'montado'; // Added 'em_montagem_kits'
     gruposImpressaoProducao?: ProductionGroup[]; // Adicionado para rastrear grupos de impressão gerados
     atendimentoEstoqueDetalhado?: { // Adicionado para rastrear atendimento de estoque detalhado
       quantidadeProdutoAtendidaDiretamente?: number;
@@ -455,4 +458,76 @@ export interface ItemToDebit {
   pedidoId?: string;
   groupId?: string;
   debitType?: 'full' | 'available';
+}
+
+export interface ProducedPart {
+  parteId: string;
+  quantidadeProduzida: number;
+  destinoProducao: 'pedido' | 'montagem_avulsa' | 'estoque';
+  targetProductId: string; // Made required
+  targetProductType: 'peca' | 'modelo' | 'kit'; // Made required
+  locais?: {
+    recipienteId: string;
+    divisao?: { h: number; v: number } | null;
+    quantidade: number;
+    localId?: string;
+  }[];
+  tipoProdutoGerado?: 'parte' | 'peca';
+  parentPecaId?: string;
+  parentModeloId?: string;
+  parentKitId?: string;
+  sourceName?: string; // Added sourceName
+}
+
+export interface ParteParaMontagemAvulsa {
+  id?: string;
+  parteId: string;
+  quantidade: number;
+  sourceOptimizedGroupId: string;
+  sourcePedidoId?: string;
+  timestamp: Timestamp | FieldValue;
+}
+
+export interface LancamentoMontagem {
+  id?: string; // Firestore generated ID
+  tipoEvento: 'entrada_partes_peca' | 'entrada_pecas_modelo' | 'entrada_modelos_kit' | 'conclusao_montagem_peca' | 'conclusao_montagem_modelo' | 'conclusao_montagem_kit';
+  timestamp: Timestamp | FieldValue;
+  usuarioId: string;
+  pedidoId?: string; // Opcional, se vinculado a um pedido
+  pedidoNumero?: string; // Adicionado para referência ao número do pedido
+  sourceOptimizedGroupId?: string; // Para rastreabilidade da origem da impressão
+  payload: {
+    destino?: 'pedido' | 'montagem_avulsa' | 'estoque';
+    targetProductId: string; // ID da peça/modelo/kit sendo montado
+    targetProductType: 'peca' | 'modelo' | 'kit';
+    quantidade: number; // Quantidade do item (parte/peça/modelo) que está sendo "movido" para montagem
+    parteId?: string; // Se o evento for 'entrada_partes_peca'
+    pecaId?: string; // Se o evento for 'entrada_pecas_modelo'
+    modeloId?: string; // Se o evento for 'entrada_modelos_kit'
+    parentPecaId?: string;
+    parentModeloId?: string;
+    parentKitId?: string;
+    assemblyInstanceId?: string; // ID único da instância de montagem
+    sourceName?: string; // Added sourceName
+  };
+}
+
+export interface GrupoMontagem {
+  id?: string; // Firestore generated ID
+  pedidoId?: string; // Opcional, se vinculado a um pedido
+  pedidoNumero?: string | null;
+  targetProductId: string; // ID da peça/modelo/kit que está sendo montado
+  targetProductType: 'peca' | 'modelo' | 'kit';
+  assemblyInstanceId: string; // ID único para esta instância de montagem
+  status: 'aguardando_montagem' | 'em_montagem' | 'montado' | 'cancelado';
+  partesNecessarias?: { parteId: string; quantidade: number; quantidadeAtendida: number; }[];
+  pecasNecessarias?: { pecaId: string; quantidade: number; quantidadeAtendida: number; }[];
+  modelosNecessarios?: { modeloId: string; quantidade: number; quantidadeAtendida: number; }[];
+  timestampCriacao: Timestamp | FieldValue;
+  timestampInicio?: Timestamp | FieldValue;
+  timestampConclusao?: Timestamp | FieldValue;
+  isAvulsa: boolean; // true se não vinculado a um pedido específico (montagem avulsa)
+  sourceOptimizedGroupId?: string; // Para rastreabilidade
+  parentModeloId?: string | null;
+  parentKitId?: string | null;
 }

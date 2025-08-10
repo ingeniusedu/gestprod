@@ -3,15 +3,20 @@ import { OptimizedGroup, Peca } from '../types';
 import { LocalProduto } from '../types/mapaEstoque'; // Corrected import path for LocalProduto
 import { X } from 'lucide-react';
 
+export interface ProducedPartData {
+  parteId: string;
+  quantidadeProduzida: number;
+  pecaId?: string;
+  destinoProducao: 'pedido' | 'estoque' | 'montagem_avulsa';
+  localEstoqueId?: string;
+  targetProductId?: string;
+  targetProductType?: 'peca' | 'modelo' | 'kit';
+  destinoExcedente?: 'estoque' | 'montagem'; // Add this line
+}
+
 export interface ConcludeData {
-  group: OptimizedGroup; // Agora passamos o grupo completo
-  producedParts: {
-    parteId: string;
-    quantidadeProduzida: number;
-    pecaId?: string; // Add pecaId here
-    destinoExcedente?: 'estoque' | 'montagem';
-    localEstoqueId?: string;
-  }[];
+  group: OptimizedGroup;
+  producedParts: ProducedPartData[];
 }
 
 interface ProductionConclusionModalProps {
@@ -20,7 +25,7 @@ interface ProductionConclusionModalProps {
   group: OptimizedGroup | null;
   availablePecas: Peca[];
   locaisProdutos: LocalProduto[];
-  onConclude: (data: ConcludeData) => void;
+  onConclude: (data: ConcludeData) => Promise<void>;
 }
 
 const ProductionConclusionModal: React.FC<ProductionConclusionModalProps> = ({ 
@@ -76,45 +81,70 @@ const ProductionConclusionModal: React.FC<ProductionConclusionModalProps> = ({
 
   const handleSubmit = () => {
     if (!group) return;
+  
+    const finalProducedParts: ProducedPartData[] = [];
 
-    const producedParts = Object.entries(producedQuantities).map(([parteId, quantidadeProduzida]) => {
+    // Determine the correct targetProductId and targetProductType based on the group's origin
+    let targetProductId: string | undefined;
+    let targetProductType: 'peca' | 'modelo' | 'kit' | undefined;
+
+    if (group.parentKitId) {
+      targetProductId = group.parentKitId;
+      targetProductType = 'kit';
+    } else if (group.parentModeloId) {
+      targetProductId = group.parentModeloId;
+      targetProductType = 'modelo';
+    } else if (group.parentPecaId) {
+      targetProductId = group.parentPecaId;
+      targetProductType = 'peca';
+    }
+
+    Object.entries(producedQuantities).forEach(([parteId, quantidadeProduzida]) => {
       const parteInfo = group.partesNoGrupo[parteId];
-      const excedente = quantidadeProduzida - parteInfo.quantidade;
-      let destinoExcedente: 'estoque' | 'montagem' | undefined = undefined;
-      let localEstoqueId: string | undefined = undefined;
-      let pecaId: string | undefined = undefined; // New variable
+      const quantidadeEsperada = parteInfo.quantidade;
+      const excedente = quantidadeProduzida - quantidadeEsperada;
 
-      // Find the pecaId for the current parteId
-      for (const peca of availablePecas) {
-        for (const grupoImpressao of peca.gruposImpressao) {
-          if (grupoImpressao.partes.some(p => p.parteId === parteId)) {
-            pecaId = peca.id; // Found the pecaId
-            break; // Exit inner loop
-          }
-        }
-        if (pecaId) break; // Exit outer loop
+      // Adiciona a parte produzida para o pedido
+      if (quantidadeEsperada > 0) {
+        finalProducedParts.push({
+          parteId,
+          quantidadeProduzida: quantidadeEsperada,
+          pecaId: group.parentPecaId, // Keep pecaId for context if needed elsewhere
+          destinoProducao: 'pedido',
+          targetProductId: targetProductId, // Use dynamically determined ID
+          targetProductType: targetProductType, // Use dynamically determined type
+        });
       }
 
+      // Adiciona o excedente com seu destino específico
       if (excedente > 0) {
-        destinoExcedente = excessDestinations[parteId];
+        const destinoExcedente = excessDestinations[parteId];
         if (destinoExcedente === 'estoque') {
-          localEstoqueId = selectedStockLocations[parteId];
+          finalProducedParts.push({
+            parteId,
+            quantidadeProduzida: excedente,
+            pecaId: group.parentPecaId, // Keep pecaId for context if needed elsewhere
+            destinoProducao: 'estoque',
+            localEstoqueId: selectedStockLocations[parteId],
+          });
+        } else if (destinoExcedente === 'montagem') {
+          finalProducedParts.push({
+            parteId,
+            quantidadeProduzida: excedente,
+            pecaId: group.parentPecaId, // Keep pecaId for context if needed elsewhere
+            destinoProducao: 'montagem_avulsa',
+            targetProductId: targetProductId, // Use dynamically determined ID
+            targetProductType: targetProductType, // Use dynamically determined type
+          });
         }
       }
-
-      return {
-        parteId,
-        quantidadeProduzida,
-        ...(pecaId && { pecaId }), // Include pecaId if found
-        ...(excedente > 0 && { destinoExcedente, localEstoqueId }),
-      };
     });
-
+  
     const data: ConcludeData = {
       group: group,
-      producedParts,
+      producedParts: finalProducedParts,
     };
-
+  
     onConclude(data);
     onClose();
   };

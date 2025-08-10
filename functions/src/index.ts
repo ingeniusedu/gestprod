@@ -1,7 +1,7 @@
 import {onDocumentWritten, onDocumentCreated} from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 import * as functions from "firebase-functions";
-import { PosicaoEstoque, Pedido, GrupoImpressao, ProductionGroup, Peca, Modelo, Kit, PecaParte, PecaInsumo, LancamentoServico, Servico } from "../../src/app/types"; // Import necessary types
+import { PosicaoEstoque, Pedido, GrupoImpressao, ProductionGroup, Peca, Modelo, Kit, PecaParte, PecaInsumo, LancamentoServico, Servico, ProducedPart, LancamentoMontagem, GrupoMontagem } from "../../src/app/types"; // Import necessary types
 import { getWeek } from 'date-fns';
 
 
@@ -117,7 +117,7 @@ const optimizeAndSplitGruposImpressao = (
     parentModeloId?: string;
     parentKitId?: string;
     originalGrupoImpressaoId: string; // Store the original GrupoImpressao ID
-    pedidosOrigem: { pedidoId: string; pedidoNumero: string; groupId: string }[];
+    pedidosOrigem: { pedidoId: string; pedidoNumero: string; groupId: string; parentModeloId?: string; parentKitId?: string }[];
     existingDocIds: string[]; // To store IDs of existing ProductionGroups if consolidated
   }>();
 
@@ -154,7 +154,7 @@ const optimizeAndSplitGruposImpressao = (
         parentModeloId: existingGroup.parentModeloId,
         parentKitId: existingGroup.parentKitId,
         originalGrupoImpressaoId: existingGroup.sourceGrupoImpressaoId || '',
-        pedidosOrigem: [],
+        pedidosOrigem: existingGroup.pedidosOrigem || [], // Preserve existing origins
         existingDocIds: [], // Initialize as an empty array
       });
     }
@@ -278,8 +278,14 @@ const optimizeAndSplitGruposImpressao = (
 
     const consolidated = consolidatedGroups.get(consolidationKey)!;
 
-    // Add the current group's origin to the consolidated group's origins
-    consolidated.pedidosOrigem.push({ pedidoId: currentPedidoId, pedidoNumero: currentPedidoNumero, groupId: grupo.id });
+    // Add the current group's origin to the consolidated group's origins, including parentModeloId and parentKitId
+    consolidated.pedidosOrigem.push({
+      pedidoId: currentPedidoId,
+      pedidoNumero: currentPedidoNumero,
+      groupId: grupo.id,
+      ...(parentModeloId && { parentModeloId: parentModeloId }),
+      ...(parentKitId && { parentKitId: parentKitId }),
+    });
 
     // Aggregate parts
     grupo.partes.forEach(parte => {
@@ -472,19 +478,12 @@ export const processLancamentoProduto = onDocumentCreated({
     const lancamentoId = event.params.lancamentoId;
     const lancamentoData = event.data?.data();
 
-    functions.logger.log(`[${lancamentoId}] Starting stock update based on new architecture.`);
-    functions.logger.log(`[${lancamentoId}] Type of lancamentoData.locais:`, typeof lancamentoData?.locais); // Debugging
-    functions.logger.log(`[${lancamentoId}] Value of lancamentoData.locais:`, lancamentoData?.locais); // Debugging
-
     if (!lancamentoData) {
         functions.logger.error(`[${lancamentoId}] Document data is empty. Aborting.`);
         return;
     }
 
     const { produtoId, tipoProduto, tipoMovimento, locais, quantidade } = lancamentoData;
-
-    functions.logger.log(`[${lancamentoId}] Debug: produtoId: ${produtoId}, tipoProduto: ${tipoProduto}, tipoMovimento: ${tipoMovimento}`);
-    functions.logger.log(`[${lancamentoId}] Debug: locais (type: ${typeof locais}, value:`, locais, `), quantidade (type: ${typeof quantidade}, value: ${quantidade})`);
 
     // 1. Validate required fields
     if (!produtoId || !tipoProduto || !tipoMovimento) {
@@ -497,8 +496,6 @@ export const processLancamentoProduto = onDocumentCreated({
     // Validate that either 'locais' or 'quantidade' is present
     const hasLocais = Array.isArray(locais) && locais.length > 0;
     const hasQuantidade = typeof quantidade === "number" && quantidade > 0;
-
-    functions.logger.log(`[${lancamentoId}] Debug: hasLocais: ${hasLocais}, hasQuantidade: ${hasQuantidade}`);
 
     if (!hasLocais && !hasQuantidade) {
         functions.logger.error(`[${lancamentoId}] Invalid lancamento data: Must have either 'locais' or 'quantidade'.`, {
@@ -515,8 +512,6 @@ export const processLancamentoProduto = onDocumentCreated({
 
     try {
         await db.runTransaction(async (transaction) => {
-            functions.logger.log(`[${lancamentoId}] Starting transaction for product ${produtoId}.`);
-
             // Check if product document exists before proceeding
             const produtoRef = db.doc(`/${tipoProduto}s/${produtoId}`);
             const produtoDoc = await transaction.get(produtoRef);
@@ -525,10 +520,8 @@ export const processLancamentoProduto = onDocumentCreated({
             }
 
             let currentPosicoesEstoque = (produtoDoc.data()?.posicoesEstoque || []) as PosicaoEstoque[];
-            functions.logger.log(`[${lancamentoId}] Current posicoesEstoque before update:`, currentPosicoesEstoque);
 
             if (hasLocais) {
-                functions.logger.log(`[${lancamentoId}] Processing ${locais.length} local entries.`);
                 for (const local of locais) {
                     if (!local.recipienteId || !local.quantidade || local.quantidade <= 0) {
                         functions.logger.warn(`[${lancamentoId}] Skipping invalid local entry:`, local);
@@ -564,7 +557,6 @@ export const processLancamentoProduto = onDocumentCreated({
                 }
             } else if (hasQuantidade) {
                 if (tipoMovimento === 'saida') {
-                    functions.logger.log(`[${lancamentoId}] Processing general quantity debit of ${quantidade}.`);
                     let quantidadeADebitar = quantidade;
                     const estoqueTotalDisponivel = currentPosicoesEstoque.reduce((acc, pos) => acc + pos.quantidade, 0);
 
@@ -591,8 +583,6 @@ export const processLancamentoProduto = onDocumentCreated({
             // Recalculate total stock from the sum of positions to ensure consistency
             const newEstoqueTotal = finalPosicoesEstoque.reduce((acc, pos) => acc + pos.quantidade, 0);
 
-            functions.logger.log(`[${lancamentoId}] Updating product ${produtoId}. New total stock: ${newEstoqueTotal}.`);
-
             const updateData: { [key: string]: any } = {
                 estoqueTotal: newEstoqueTotal,
                 posicoesEstoque: finalPosicoesEstoque,
@@ -601,9 +591,6 @@ export const processLancamentoProduto = onDocumentCreated({
 
             transaction.update(produtoRef, updateData);
         });
-
-        functions.logger.log(`[${lancamentoId}] Transaction for product ${produtoId} completed successfully.`);
-
     } catch (error) {
         functions.logger.error(`[${lancamentoId}] Transaction failed for product ${produtoId}:`, error);
     }
@@ -616,7 +603,7 @@ export const processLancamentoProducao = onDocumentCreated({
   document: "lancamentosProducao/{lancamentoId}",
   region: "us-central1",
 }, async (event) => {
-  const FUNCTION_VERSION = "1.0.0";
+  const FUNCTION_VERSION = "1.0.17";
   const lancamentoId = event.params.lancamentoId;
   functions.logger.log(`[${lancamentoId}] TRIGGERED: processLancamentoProducao v${FUNCTION_VERSION}. Event ID: ${event.id}`);
   const lancamentoData = event.data?.data();
@@ -711,11 +698,13 @@ export const processLancamentoProducao = onDocumentCreated({
       functions.logger.error(`[${lancamentoId}] Error updating production group status for ${optimizedGroupId}:`, error);
     }
   } else if (tipoEvento === 'conclusao_impressao') {
-    const { optimizedGroupId, producedParts, pedidosOrigem, sourceName } = payload;
+    const { optimizedGroupId, producedParts, pedidosOrigem } = payload;
 
-    if (!optimizedGroupId || !producedParts || !pedidosOrigem || !sourceName) {
-      functions.logger.error(`[${lancamentoId}] Invalid payload for conclusao_impressao event: Missing required fields.`);
-      return;
+    functions.logger.log(`[${lancamentoId}] Conclusao_impressao payload received. Optimized Group ID: ${optimizedGroupId}, Produced Parts Count: ${producedParts.length}, Pedidos Origem Count: ${pedidosOrigem.length}`);
+
+    if (!optimizedGroupId || !producedParts || !pedidosOrigem) {
+        functions.logger.error(`[${lancamentoId}] Invalid payload for conclusao_impressao event: Missing required fields (optimizedGroupId, producedParts, pedidosOrigem).`);
+        return;
     }
 
     try {
@@ -729,10 +718,6 @@ export const processLancamentoProducao = onDocumentCreated({
       });
       functions.logger.log(`[${lancamentoId}] OptimizedGroup ${optimizedGroupId} status updated to 'produzido'.`);
 
-      // Fetch all pecas to determine tipoPeca for status updates
-      const pecasSnapshot = await db.collection('pecas').get();
-      const allPecas = pecasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Peca[];
-
       // 2. Iterar sobre os pedidos de origem e atualizar os status
       for (const origem of pedidosOrigem) {
         const pedidoRef = db.collection('pedidos').doc(origem.pedidoId);
@@ -744,23 +729,131 @@ export const processLancamentoProducao = onDocumentCreated({
         }
 
         const pedidoData = pedidoDoc.data() as Pedido;
-        let updatedProdutosPromises = pedidoData.produtos.map(async (produto) => { // Made the map callback async
+        let updatedProdutosPromises = pedidoData.produtos.map(async (produto) => {
           if (produto.gruposImpressaoProducao) {
             const updatedGruposImpressaoProducao = produto.gruposImpressaoProducao.map(originalGroup => {
               if (originalGroup.id === origem.groupId) {
                 return {
                   ...originalGroup,
-                  status: 'produzido', // Marcar grupo original como produzido
+                  status: 'produzido',
                   completedAt: admin.firestore.FieldValue.serverTimestamp(),
                 };
               }
               return originalGroup;
             });
 
-            // Recalcular statusProducaoItem para este produto
+            let currentAtendimentoEstoqueDetalhado = produto.atendimentoEstoqueDetalhado || {};
+            let currentPartesAtendidas = currentAtendimentoEstoqueDetalhado.partesAtendidas || [];
+
+            for (const producedPart of (producedParts as ProducedPart[])) {
+                functions.logger.log(`[${lancamentoId}] Inside loop - ProducedPart Parte ID: ${producedPart.parteId}, Destino: ${producedPart.destinoProducao}, Quantidade: ${producedPart.quantidadeProduzida}`);
+
+                if (producedPart.destinoProducao === 'estoque') {
+                    // Create lancamentoProduto for general stock
+                    const lancamentoProdutoRef = db.collection('lancamentosProdutos').doc();
+                    batch.set(lancamentoProdutoRef, {
+                        tipoProduto: producedPart.tipoProdutoGerado || 'parte',
+                        produtoId: producedPart.parteId,
+                        tipoMovimento: 'entrada',
+                        quantidade: producedPart.quantidadeProduzida,
+                        locais: producedPart.locais,
+                        usuario: lancamentoData.usuarioId,
+                        data: admin.firestore.FieldValue.serverTimestamp(),
+                        origem: `Produção - Grupo Otimizado ${optimizedGroupId}`,
+                    });
+                } else { // 'montagem_avulsa' or 'pedido'
+                    let tipoEventoMontagem: LancamentoMontagem['tipoEvento'];
+                    let targetProductIdMontagem: string;
+                    let targetProductTypeMontagem: 'peca' | 'modelo' | 'kit';
+
+                    targetProductIdMontagem = producedPart.targetProductId;
+                    targetProductTypeMontagem = producedPart.targetProductType;
+
+                    if (targetProductTypeMontagem === 'peca') {
+                        tipoEventoMontagem = 'entrada_partes_peca';
+                    } else if (targetProductTypeMontagem === 'modelo') {
+                        tipoEventoMontagem = 'entrada_pecas_modelo';
+                    } else if (targetProductTypeMontagem === 'kit') {
+                        tipoEventoMontagem = 'entrada_modelos_kit';
+                    } else {
+                        functions.logger.error(`[${lancamentoId}] Skipping lancamentoMontagem creation: Invalid targetProductType: ${targetProductTypeMontagem}. ProducedPart data:`, producedPart);
+                        continue;
+                    }
+
+                    // NEW VALIDATION: Ensure targetProductId is not empty
+                    if (!targetProductIdMontagem) {
+                        functions.logger.error(`[${lancamentoId}] Skipping lancamentoMontagem creation: targetProductId is empty. This indicates missing target IDs in the producedPart data. ProducedPart data:`, producedPart);
+                        continue;
+                    }
+
+                    // Create one lancamentoMontagem per unit
+                    for (let i = 1; i <= producedPart.quantidadeProduzida; i++) {
+                        try {
+                            const assemblyInstanceId = `${origem.pedidoId}-${targetProductIdMontagem}-${i}`;
+                            const lancamentoMontagemRef = db.collection('lancamentosMontagens').doc();
+                            const newLancamentoMontagem: LancamentoMontagem = {
+                                tipoEvento: tipoEventoMontagem,
+                                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                                usuarioId: lancamentoData.usuarioId,
+                                pedidoId: origem.pedidoId,
+                                pedidoNumero: origem.pedidoNumero,
+                                sourceOptimizedGroupId: optimizedGroupId,
+                                payload: {
+                                    destino: producedPart.destinoProducao,
+                                    targetProductId: targetProductIdMontagem,
+                                    targetProductType: targetProductTypeMontagem,
+                                    quantidade: 1, // Always 1 per instance
+                                    parteId: producedPart.parteId,
+                                    ...(targetProductTypeMontagem === 'modelo' && { pecaId: producedPart.targetProductId }), // If assembling into a model, the produced part is a peca
+                                    ...(targetProductTypeMontagem === 'kit' && { modeloId: producedPart.targetProductId }), // If assembling into a kit, the produced part is a modelo
+                                    ...(producedPart.parentPecaId && { parentPecaId: producedPart.parentPecaId }),
+                                    ...(producedPart.parentModeloId && { parentModeloId: producedPart.parentModeloId }),
+                                    ...(producedPart.parentKitId && { parentKitId: producedPart.parentKitId }),
+                                    assemblyInstanceId: assemblyInstanceId,
+                                    ...(producedPart.sourceName && { sourceName: producedPart.sourceName }), // Conditionally add sourceName
+                                },
+                            };
+                            batch.set(lancamentoMontagemRef, newLancamentoMontagem);
+                        } catch (innerError) {
+                            functions.logger.error(`[${lancamentoId}] ERROR: Failed to create lancamentoMontagem for producedPart. ` +
+                                `ProducedPart data: ${JSON.stringify(producedPart)}, ` +
+                                `targetProductId: "${targetProductIdMontagem}", ` +
+                                `assemblyInstanceId: "${origem.pedidoId}-${targetProductIdMontagem}-${i}". Error:`, innerError);
+                            continue;
+                        }
+                    }
+
+                    if (producedPart.destinoProducao === 'pedido') {
+                        const existingEntryIndex = currentPartesAtendidas.findIndex(
+                            (item: { parteId: string; }) => item.parteId === producedPart.parteId
+                        );
+                        if (existingEntryIndex > -1) {
+                            currentPartesAtendidas[existingEntryIndex].quantidade += producedPart.quantidadeProduzida;
+                        } else {
+                            currentPartesAtendidas.push({ parteId: producedPart.parteId, quantidade: producedPart.quantidadeProduzida });
+                        }
+                    } else { // montagem_avulsa
+                        const partesAvulsaRef = db.collection('partesParaMontagemAvulsa').doc();
+                        batch.set(partesAvulsaRef, {
+                            parteId: producedPart.parteId,
+                            quantidade: producedPart.quantidadeProduzida,
+                            sourceOptimizedGroupId: optimizedGroupId,
+                            sourcePedidoId: origem.pedidoId,
+                            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        });
+                    }
+                }
+            }
+
+            currentAtendimentoEstoqueDetalhado = {
+                ...currentAtendimentoEstoqueDetalhado,
+                partesAtendidas: currentPartesAtendidas,
+            };
+
+            // Recalculate statusProducaoItem para este produto
             const allGroupsProducedForThisProduct = updatedGruposImpressaoProducao.every(g => g.status === 'produzido');
             if (allGroupsProducedForThisProduct) {
-              const peca = allPecas.find(p => p.id === produto.produtoId);
+              // No longer fetching pecaData, so we need to rely on producedPart.targetProductType
               let nextStatusForProduct: Pedido['produtos'][number]['statusProducaoItem'] = 'pronto_para_embalagem';
 
               // Check if any part in the original production group requires assembly
@@ -768,57 +861,30 @@ export const processLancamentoProducao = onDocumentCreated({
               const originalOptimizedGroupData = originalOptimizedGroup.data() as ProductionGroup;
               const hasAssemblyParts = Object.values(originalOptimizedGroupData.partesNoGrupo).some(p => p.hasAssembly);
 
-              if (peca?.tipoPeca === 'composta_um_grupo_com_montagem' || peca?.tipoPeca === 'composta_multiplos_grupos' || hasAssemblyParts) {
-                nextStatusForProduct = 'em_montagem_pecas';
-              }
-              // Lógica para excedente destinado à montagem
-              interface ProducedPart {
-                parteId: string;
-                quantidadeProduzida: number;
-                destinoExcedente?: 'montagem' | 'estoque';
-              }
-              const partesExcedentesParaMontagem = (producedParts as ProducedPart[]).filter(
-                (p: ProducedPart) => p.destinoExcedente === 'montagem' && p.parteId in originalOptimizedGroupData.partesNoGrupo
-              );
+              // If the target product type is 'peca' and it has assembly parts, or if it's a model/kit, it needs assembly
+              const isTargetPecaWithAssembly = producedParts.some((p: ProducedPart) => p.targetProductType === 'peca' && hasAssemblyParts);
+              const isTargetModelo = producedParts.some((p: ProducedPart) => p.targetProductType === 'modelo');
+              const isTargetKit = producedParts.some((p: ProducedPart) => p.targetProductType === 'kit');
 
-              if (partesExcedentesParaMontagem.length > 0) {
-                let currentAtendimentoEstoqueDetalhado = produto.atendimentoEstoqueDetalhado || {};
-                let currentPartesAtendidas = currentAtendimentoEstoqueDetalhado.partesAtendidas || [];
-
-                for (const excedenteParte of partesExcedentesParaMontagem) {
-                  const parteInfo = originalOptimizedGroupData.partesNoGrupo[excedenteParte.parteId];
-                  const expectedQuantity = parteInfo.quantidade;
-                  const excessQuantity = excedenteParte.quantidadeProduzida - expectedQuantity;
-
-                  if (excessQuantity > 0) {
-                    const existingEntryIndex = currentPartesAtendidas.findIndex(
-                      (item: { parteId: string; }) => item.parteId === excedenteParte.parteId
-                    );
-
-                    if (existingEntryIndex > -1) {
-                      currentPartesAtendidas[existingEntryIndex].quantidade += excessQuantity;
-                    } else {
-                      currentPartesAtendidas.push({ parteId: excedenteParte.parteId, quantidade: excessQuantity });
-                    }
-                  }
+              if (isTargetPecaWithAssembly || isTargetModelo || isTargetKit) {
+                if (isTargetPecaWithAssembly) {
+                    nextStatusForProduct = 'em_montagem_pecas';
+                } else if (isTargetModelo) {
+                    nextStatusForProduct = 'em_montagem_modelos';
+                } else if (isTargetKit) {
+                    nextStatusForProduct = 'em_montagem_kits'; // Assuming a new status for kits
                 }
-                currentAtendimentoEstoqueDetalhado = {
-                  ...currentAtendimentoEstoqueDetalhado,
-                  partesAtendidas: currentPartesAtendidas,
-                };
-                return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao, statusProducaoItem: nextStatusForProduct, atendimentoEstoqueDetalhado: currentAtendimentoEstoqueDetalhado };
               }
-
-              return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao, statusProducaoItem: nextStatusForProduct }; // Retorno final do map
+              return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao, statusProducaoItem: nextStatusForProduct, atendimentoEstoqueDetalhado: currentAtendimentoEstoqueDetalhado };
             }
-            return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao };
+            return { ...produto, gruposImpressaoProducao: updatedGruposImpressaoProducao, atendimentoEstoqueDetalhado: currentAtendimentoEstoqueDetalhado };
           }
           return produto;
         });
 
         let updatedProdutos = await Promise.all(updatedProdutosPromises);
 
-        // Recalcular status geral do pedido
+        // Recalculate status geral do pedido
         let newPedidoStatus = pedidoData.status;
         const allProductsDone = updatedProdutos.every(p => p.statusProducaoItem === 'concluido' || p.statusProducaoItem === 'pronto_para_embalagem');
         if (allProductsDone) {
@@ -828,13 +894,14 @@ export const processLancamentoProducao = onDocumentCreated({
             p.statusProducaoItem === 'em_producao' ||
             p.statusProducaoItem === 'em_montagem_pecas' ||
             p.statusProducaoItem === 'em_montagem_modelos' ||
+            p.statusProducaoItem === 'em_montagem_kits' || // Added new status
             p.gruposImpressaoProducao?.some(g => g.status === 'em_producao')
           );
           if (anyInProduction) {
             newPedidoStatus = 'em_producao';
           }
         }
-
+        
         batch.update(pedidoRef, { produtos: updatedProdutos, status: newPedidoStatus });
       }
 
@@ -861,9 +928,6 @@ export const processLancamentoInsumo = onDocumentCreated({
     const lancamentoId = event.params.lancamentoId;
     functions.logger.log(`[${lancamentoId}] TRIGGERED: processLancamentoInsumo v${FUNCTION_VERSION}. Event ID: ${event.id}`);
     const lancamentoData = event.data?.data();
-
-    functions.logger.log(`[${lancamentoId}] Starting insumo stock update (Version: ${FUNCTION_VERSION}).`);
-    functions.logger.log(`[${lancamentoId}] Received data:`, JSON.stringify(lancamentoData, null, 2));
 
     if (!lancamentoData) {
         functions.logger.error(`[${lancamentoId}] Document data is empty. Aborting.`);
@@ -901,11 +965,9 @@ export const processLancamentoInsumo = onDocumentCreated({
                     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
                 });
             });
-            functions.logger.log(`[${lancamentoId}] Legacy filament logic completed for ${insumoId}.`);
 
         } else {
             // Logic for other insumo types (materials, packaging, etc.)
-            functions.logger.log(`[${lancamentoId}] Applying stock logic for non-filament insumo ${insumoId}.`);
             
             await db.runTransaction(async (transaction) => {
                 const insumoDoc = await transaction.get(insumoRef);
@@ -914,7 +976,6 @@ export const processLancamentoInsumo = onDocumentCreated({
                 }
 
                 let currentPosicoesEstoque = (insumoDoc.data()?.posicoesEstoque || []) as PosicaoEstoque[];
-                functions.logger.log(`[${lancamentoId}] Current posicoesEstoque before update:`, currentPosicoesEstoque);
 
                 // Collect all localInsumo documents first (READS)
                 const localInsumoRefs = new Map<string, admin.firestore.DocumentReference>();
@@ -1033,7 +1094,6 @@ export const processLancamentoInsumo = onDocumentCreated({
                     }
                 }
             });
-            functions.logger.log(`[${lancamentoId}] Stock updated for insumo ${insumoId}.`);
         }
     } catch (error) {
         functions.logger.error(`[${lancamentoId}] Transaction failed for insumo ${insumoId}:`, error);
@@ -1123,5 +1183,251 @@ export const processarLancamentoServico = onDocumentCreated({
 
     } catch (error) {
         functions.logger.error(`[${lancamentoId}] Error processing service launch:`, error);
+    }
+});
+
+export const processLancamentoMontagem = onDocumentCreated({
+    document: "lancamentosMontagens/{lancamentoId}",
+    region: "us-central1",
+}, async (event) => {
+    const FUNCTION_VERSION = "1.0.6";
+    const lancamentoId = event.params.lancamentoId;
+    functions.logger.log(`[${lancamentoId}] TRIGGERED: processLancamentoMontagem v${FUNCTION_VERSION}. Event ID: ${event.id}`);
+    const lancamentoData = event.data?.data() as LancamentoMontagem;
+
+    if (!lancamentoData) {
+        functions.logger.error(`[${lancamentoId}] Document data is empty. Aborting.`);
+        return;
+    }
+
+    const { pedidoId, sourceOptimizedGroupId, payload, tipoEvento } = lancamentoData;
+    const { targetProductId, targetProductType, quantidade, parteId, pecaId, modeloId, assemblyInstanceId } = payload;
+
+    if (!targetProductId || !targetProductType || !quantidade || !assemblyInstanceId) {
+        functions.logger.error(`[${lancamentoId}] Invalid lancamentoMontagem data: Missing required fields (targetProductId, targetProductType, quantity, or assemblyInstanceId).`);
+        return;
+    }
+
+    try {
+        await db.runTransaction(async (transaction) => {
+            let grupoMontagemRef: admin.firestore.DocumentReference;
+            let grupoMontagemData: GrupoMontagem | undefined;
+            let pedidoDoc: admin.firestore.DocumentSnapshot | undefined;
+
+            const isAvulsa = !pedidoId;
+
+            // --- ALL READS FIRST ---
+
+            // 1. Fetch Pedido document if it exists (Read)
+            if (pedidoId) {
+                const pedidoRef = db.collection('pedidos').doc(pedidoId);
+                pedidoDoc = await transaction.get(pedidoRef);
+            }
+
+            // 2. Find existing GrupoMontagem using the specific assemblyInstanceId (Read)
+            const existingGroups = await transaction.get(
+                db.collection('gruposMontagem')
+                    .where('assemblyInstanceId', '==', assemblyInstanceId)
+                    .limit(1)
+            );
+
+            if (!existingGroups.empty) {
+                grupoMontagemRef = existingGroups.docs[0].ref;
+                grupoMontagemData = existingGroups.docs[0].data() as GrupoMontagem;
+            } else {
+                grupoMontagemRef = db.collection('gruposMontagem').doc();
+            }
+
+            // 3. If GrupoMontagem is new, fetch its definition (Read)
+            if (!grupoMontagemData) {
+                let targetProductDoc;
+                if (targetProductType === 'peca') {
+                    targetProductDoc = await transaction.get(db.collection('pecas').doc(targetProductId));
+                } else if (targetProductType === 'modelo') {
+                    targetProductDoc = await transaction.get(db.collection('modelos').doc(targetProductId));
+                } else if (targetProductType === 'kit') {
+                    targetProductDoc = await transaction.get(db.collection('kits').doc(targetProductId));
+                }
+
+                if (!targetProductDoc?.exists) {
+                    throw new Error(`Target product ${targetProductId} of type ${targetProductType} not found for GrupoMontagem creation.`);
+                }
+                const productData = targetProductDoc.data();
+                
+                // --- LOGIC & DATA PREPARATION (NO MORE READS) ---
+
+                grupoMontagemData = {
+                    id: grupoMontagemRef.id,
+                    pedidoId: pedidoId,
+                    pedidoNumero: lancamentoData.pedidoNumero ?? null,
+                    targetProductId: targetProductId,
+                    targetProductType: targetProductType,
+                    assemblyInstanceId: assemblyInstanceId, // **CRITICAL: Save the instance ID**
+                    status: 'aguardando_montagem',
+                    timestampCriacao: admin.firestore.FieldValue.serverTimestamp(),
+                    isAvulsa: isAvulsa,
+                    sourceOptimizedGroupId: sourceOptimizedGroupId,
+                    partesNecessarias: [],
+                    pecasNecessarias: [],
+                    modelosNecessarios: [],
+                    parentModeloId: payload.parentModeloId ?? null,
+                    parentKitId: payload.parentKitId ?? null,
+                };
+
+                if (targetProductType === 'peca' && productData?.gruposImpressao) {
+                    (productData.gruposImpressao as GrupoImpressao[]).forEach(grupo => {
+                        grupo.partes.forEach(parte => {
+                            const existing = grupoMontagemData!.partesNecessarias!.find(p => p.parteId === parte.parteId);
+                            if (existing) {
+                                existing.quantidade += parte.quantidade;
+                            } else {
+                                grupoMontagemData!.partesNecessarias!.push({ parteId: parte.parteId, quantidade: parte.quantidade, quantidadeAtendida: 0 });
+                            }
+                        });
+                    });
+                } else if (targetProductType === 'modelo' && productData?.pecas) {
+                    (productData.pecas as { pecaId: string; quantidade: number; }[]).forEach(pecaRef => {
+                        grupoMontagemData!.pecasNecessarias!.push({ pecaId: pecaRef.pecaId, quantidade: pecaRef.quantidade, quantidadeAtendida: 0 });
+                    });
+                } else if (targetProductType === 'kit' && productData?.modelos) {
+                    (productData.modelos as { modeloId: string; quantidade: number; }[]).forEach(modeloRef => {
+                        grupoMontagemData!.modelosNecessarios!.push({ modeloId: modeloRef.modeloId, quantidade: modeloRef.quantidade, quantidadeAtendida: 0 });
+                    });
+                }
+            }
+
+            // This check ensures grupoMontagemData is defined for the rest of the function.
+            if (!grupoMontagemData) {
+                throw new Error("grupoMontagemData could not be initialized.");
+            }
+
+            // Update attended quantities
+            if (tipoEvento === 'entrada_partes_peca' && parteId) {
+                const parteNecessaria = grupoMontagemData.partesNecessarias?.find(p => p.parteId === parteId);
+                if (parteNecessaria) parteNecessaria.quantidadeAtendida += quantidade;
+                else {
+                    if (!grupoMontagemData.partesNecessarias) grupoMontagemData.partesNecessarias = [];
+                    grupoMontagemData.partesNecessarias.push({ parteId: parteId, quantidade: 0, quantidadeAtendida: quantidade });
+                }
+            } else if (tipoEvento === 'entrada_pecas_modelo' && pecaId) {
+                const pecaNecessaria = grupoMontagemData.pecasNecessarias?.find(p => p.pecaId === pecaId);
+                if (pecaNecessaria) pecaNecessaria.quantidadeAtendida += quantidade;
+                else {
+                    if (!grupoMontagemData.pecasNecessarias) grupoMontagemData.pecasNecessarias = [];
+                    grupoMontagemData.pecasNecessarias.push({ pecaId: pecaId, quantidade: 0, quantidadeAtendida: quantidade });
+                }
+            } else if (tipoEvento === 'entrada_modelos_kit' && modeloId) {
+                const modeloNecessario = grupoMontagemData.modelosNecessarios?.find(p => p.modeloId === modeloId);
+                if (modeloNecessario) modeloNecessario.quantidadeAtendida += quantidade;
+                else {
+                    if (!grupoMontagemData.modelosNecessarios) grupoMontagemData.modelosNecessarios = [];
+                    grupoMontagemData.modelosNecessarios.push({ modeloId: modeloId, quantidade: 0, quantidadeAtendida: quantidade });
+                }
+            }
+
+            // Recalculate status
+            const allPartsAttended = grupoMontagemData.partesNecessarias?.every((p: { quantidadeAtendida: number; quantidade: number; }) => p.quantidadeAtendida >= p.quantidade) ?? true;
+            const allPecasAttended = grupoMontagemData.pecasNecessarias?.every((p: { quantidadeAtendida: number; quantidade: number; }) => p.quantidadeAtendida >= p.quantidade) ?? true;
+            const allModelosAttended = grupoMontagemData.modelosNecessarios?.every((p: { quantidadeAtendida: number; quantidade: number; }) => p.quantidadeAtendida >= p.quantidade) ?? true;
+
+            if (allPartsAttended && allPecasAttended && allModelosAttended) {
+                grupoMontagemData.status = 'montado';
+                grupoMontagemData.timestampConclusao = admin.firestore.FieldValue.serverTimestamp();
+        
+                // ---> NEW LOGIC TO TRIGGER NEXT ASSEMBLY STAGE <---
+                if (grupoMontagemData.targetProductType === 'peca' && grupoMontagemData.parentModeloId) {
+                    const nextLancamentoRef = db.collection('lancamentosMontagens').doc();
+                    const nextLancamentoData: LancamentoMontagem = {
+                        tipoEvento: 'entrada_pecas_modelo',
+                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        usuarioId: lancamentoData.usuarioId,
+                        pedidoId: lancamentoData.pedidoId,
+                        pedidoNumero: lancamentoData.pedidoNumero,
+                        sourceOptimizedGroupId: lancamentoData.sourceOptimizedGroupId,
+                        payload: {
+                            targetProductId: grupoMontagemData.parentModeloId,
+                            targetProductType: 'modelo',
+                            quantidade: 1,
+                            pecaId: grupoMontagemData.targetProductId,
+                            assemblyInstanceId: grupoMontagemData.assemblyInstanceId, // Maintain the same assembly instance
+                        },
+                    };
+                    transaction.set(nextLancamentoRef, nextLancamentoData);
+                } else if (grupoMontagemData.targetProductType === 'modelo' && grupoMontagemData.parentKitId) {
+                    const nextLancamentoRef = db.collection('lancamentosMontagens').doc();
+                    const nextLancamentoData: LancamentoMontagem = {
+                        tipoEvento: 'entrada_modelos_kit',
+                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        usuarioId: lancamentoData.usuarioId,
+                        pedidoId: lancamentoData.pedidoId,
+                        pedidoNumero: lancamentoData.pedidoNumero,
+                        sourceOptimizedGroupId: lancamentoData.sourceOptimizedGroupId,
+                        payload: {
+                            targetProductId: grupoMontagemData.parentKitId,
+                            targetProductType: 'kit',
+                            quantidade: 1,
+                            modeloId: grupoMontagemData.targetProductId,
+                            assemblyInstanceId: grupoMontagemData.assemblyInstanceId, // Maintain the same assembly instance
+                        },
+                    };
+                    transaction.set(nextLancamentoRef, nextLancamentoData);
+                }
+            } else if (grupoMontagemData.status === 'aguardando_montagem') {
+                const anyPartAttended = grupoMontagemData.partesNecessarias?.some(p => p.quantidadeAtendida > 0) ||
+                                        grupoMontagemData.pecasNecessarias?.some(p => p.quantidadeAtendida > 0) ||
+                                        grupoMontagemData.modelosNecessarios?.some(p => p.quantidadeAtendida > 0);
+                if (anyPartAttended) {
+                    grupoMontagemData.status = 'em_montagem';
+                    if (!grupoMontagemData.timestampInicio) {
+                        grupoMontagemData.timestampInicio = admin.firestore.FieldValue.serverTimestamp();
+                    }
+                }
+            }
+
+            // --- ALL WRITES LAST ---
+
+            // 1. Write to GrupoMontagem (Write)
+            transaction.set(grupoMontagemRef, grupoMontagemData, { merge: true });
+            functions.logger.log(`[${lancamentoId}] Successfully processed and prepared update for GrupoMontagem ${grupoMontagemRef.id}.`);
+
+            // 2. Write to Pedido if applicable (Write)
+            if (pedidoDoc?.exists) {
+                const pedidoData = pedidoDoc.data() as Pedido;
+                const pedidoRef = pedidoDoc.ref;
+                
+                let updatedProdutos = pedidoData.produtos.map(produto => {
+                    if (produto.produtoId === grupoMontagemData.targetProductId && produto.tipo === grupoMontagemData.targetProductType) {
+                        let newStatusProducaoItem = produto.statusProducaoItem;
+                        if (grupoMontagemData.status === 'montado') newStatusProducaoItem = 'pronto_para_embalagem';
+                        else if (grupoMontagemData.status === 'em_montagem' || grupoMontagemData.status === 'aguardando_montagem') {
+                            newStatusProducaoItem = `em_montagem_${grupoMontagemData.targetProductType}s` as Pedido['produtos'][number]['statusProducaoItem'];
+                        }
+                        return { ...produto, statusProducaoItem: newStatusProducaoItem };
+                    }
+                    return produto;
+                });
+
+                let newPedidoStatus = pedidoData.status;
+                const allProductsDone = updatedProdutos.every(p => p.statusProducaoItem === 'concluido' || p.statusProducaoItem === 'pronto_para_embalagem');
+                if (allProductsDone) {
+                    newPedidoStatus = 'processando_embalagem';
+                } else {
+                    const anyInProduction = updatedProdutos.some(p =>
+                        p.statusProducaoItem === 'em_producao' ||
+                        p.statusProducaoItem === 'em_montagem_pecas' ||
+                        p.statusProducaoItem === 'em_montagem_modelos' ||
+                        p.statusProducaoItem === 'em_montagem_kits' ||
+                        p.gruposImpressaoProducao?.some(g => g.status === 'em_producao')
+                    );
+                    if (anyInProduction) newPedidoStatus = 'em_producao';
+                }
+
+                transaction.update(pedidoRef, { produtos: updatedProdutos, status: newPedidoStatus });
+                functions.logger.log(`[${lancamentoId}] Prepared update for Pedido ${pedidoRef.id} status.`);
+            }
+        });
+
+    } catch (error) {
+        functions.logger.error(`[${lancamentoId}] Error processing lancamentoMontagem:`, error);
     }
 });

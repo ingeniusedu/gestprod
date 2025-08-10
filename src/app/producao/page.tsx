@@ -5,7 +5,7 @@ import { db, auth } from '../services/firebase'; // Import auth
 import { collection, getDocs, doc, getDoc, updateDoc, query, where, Timestamp, addDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth'; // Import onAuthStateChanged
 import { Hourglass, Package, CheckCircle, XCircle, Play, Pause, Spool, MapPin, Users, PlusCircle } from 'lucide-react';
-import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto, PecaParte, ProductionGroupFilamento, ProductionGroupOutroInsumo, Historico, Configuracoes, DashboardMetrics, AlertaEstoque, Produto, Servico, LancamentoServico, ItemToDebit } from '../types';
+import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto, PecaParte, ProductionGroupFilamento, ProductionGroupOutroInsumo, Historico, Configuracoes, DashboardMetrics, AlertaEstoque, Produto, Servico, LancamentoServico, ItemToDebit, OptimizedGroup } from '../types';
 import { LocalProduto, LocalInsumo, Recipiente } from '../types/mapaEstoque';
 import { v4 as uuidv4 } from 'uuid';
 import ProductionLaunchModal from '../components/ProductionLaunchModal';
@@ -20,44 +20,6 @@ import { cleanObject } from '../utils/cleanObject';
 export default function Producao() {
   type PedidoProduto = Pedido['produtos'][number];
 
-  interface OptimizedFilamentItem extends ProductionGroupFilamento {
-    aggregatedId: string;
-    quantidadeNecessaria?: number;
-    estoqueAtual?: number;
-  }
-
-  interface OptimizedInsumoItem extends ProductionGroupOutroInsumo {
-    aggregatedId: string;
-    quantidadeNecessaria?: number;
-    estoqueAtual?: number;
-  }
-
-  interface OptimizedGroup {
-    id: string;
-    partesNoGrupo: { [key: string]: { nome: string; quantidade: number; estoqueAtual?: number; quantidadeNecessaria?: number; } };
-    totalPartsQuantity: number; // Renamed from quantidadeTotal
-    aggregatedGroupCount: number; // New field to track number of aggregated production groups
-    pedidosOrigem: { pedidoId: string; pedidoNumero: string; groupId: string }[];
-    sourceName: string;
-    tempoImpressaoGrupo: number;
-    corFilamento?: string;
-    filamentosNecessarios: OptimizedFilamentItem[];
-    outrosInsumosNecessarios: OptimizedInsumoItem[];
-    insumosProntos: boolean;
-    partesProntas: boolean;
-    status: ProductionGroup['status']; // Add status property
-  }
-
-  interface ConcludeData {
-    group: OptimizedGroup; // Agora passamos o grupo completo
-    producedParts: {
-      parteId: string;
-      quantidadeProduzida: number;
-      pecaId?: string; // Add pecaId here
-      destinoExcedente?: 'estoque' | 'montagem';
-      localEstoqueId?: string;
-    }[];
-  }
 
   // Helper function to calculate the effective quantity of a parent product fulfilled by its components
   const calculateEffectiveQuantityFulfilledByComponents = (
@@ -533,6 +495,9 @@ export default function Producao() {
           insumosProntos: data.insumosProntos || false,
           partesProntas: data.partesProntas || false,
           status: data.status || 'aguardando',
+          parentPecaId: data.parentPecaId,
+          parentModeloId: data.parentModeloId,
+          parentKitId: data.parentKitId,
         };
         return group;
       });
@@ -947,6 +912,9 @@ export default function Producao() {
           insumosProntos: data.insumosProntos || false,
           partesProntas: data.partesProntas || false,
           status: data.status || 'em_producao', // Default status for in-production groups
+          parentPecaId: data.parentPecaId,
+          parentModeloId: data.parentModeloId,
+          parentKitId: data.parentKitId,
         };
         return group;
       });
@@ -1028,7 +996,7 @@ export default function Producao() {
 
       setOptimizedGroups(prev => {
         const updatedMap = new Map(prev);
-        enrichedGroups.forEach((value, key) => updatedMap.set(key, value));
+        enrichedGroups.forEach(group => updatedMap.set(group.id, group));
         return updatedMap;
       });
     } catch (error) {
@@ -1335,9 +1303,10 @@ export default function Producao() {
         timestamp: serverTimestamp(),
         usuarioId: auth.currentUser.uid,
         payload: {
-          optimizedGroupId: group.id,
+          group: group, // Passar o grupo completo
           producedParts: producedParts,
-          pedidosOrigem: group.pedidosOrigem, // Passar os pedidos de origem do grupo otimizado
+          optimizedGroupId: group.id,
+          pedidosOrigem: group.pedidosOrigem,
           sourceName: group.sourceName,
         },
       }));
