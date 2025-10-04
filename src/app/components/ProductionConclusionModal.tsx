@@ -8,10 +8,15 @@ export interface ProducedPartData {
   quantidadeProduzida: number;
   pecaId?: string;
   destinoProducao: 'pedido' | 'estoque' | 'montagem_avulsa';
-  localEstoqueId?: string;
+  locais?: { recipienteId: string; quantidade: number }[]; // Updated to support multiple locations
   targetProductId?: string;
-  targetProductType?: 'peca' | 'modelo' | 'kit';
-  destinoExcedente?: 'estoque' | 'montagem'; // Add this line
+  targetProductType?: 'peca' | 'modelo' | 'kit' | 'produto_final'; // Added 'produto_final'
+  destinoExcedente?: 'estoque' | 'montagem';
+  tipoProdutoGerado?: 'parte' | 'peca';
+  parentPecaId?: string;
+  parentModeloId?: string;
+  parentKitId?: string;
+  sourceName?: string; // Added for better tracking in assembly
 }
 
 export interface ConcludeData {
@@ -39,6 +44,17 @@ const ProductionConclusionModal: React.FC<ProductionConclusionModalProps> = ({
   const [producedQuantities, setProducedQuantities] = useState<Record<string, number>>({});
   const [excessDestinations, setExcessDestinations] = useState<Record<string, 'estoque' | 'montagem'>>({});
   const [selectedStockLocations, setSelectedStockLocations] = useState<Record<string, string>>({});
+
+  const getPecaForParte = (parteId: string): Peca | null => {
+    for (const peca of availablePecas) {
+      for (const grupoImpressao of peca.gruposImpressao) {
+        if (grupoImpressao.partes.some(p => p.parteId === parteId)) {
+          return peca;
+        }
+      }
+    }
+    return null;
+  };
 
   useEffect(() => {
     if (isOpen && group) {
@@ -81,70 +97,92 @@ const ProductionConclusionModal: React.FC<ProductionConclusionModalProps> = ({
 
   const handleSubmit = () => {
     if (!group) return;
-  
+
     const finalProducedParts: ProducedPartData[] = [];
 
-    // Determine the correct targetProductId and targetProductType based on the group's origin
-    let targetProductId: string | undefined;
-    let targetProductType: 'peca' | 'modelo' | 'kit' | undefined;
-
-    if (group.parentKitId) {
-      targetProductId = group.parentKitId;
-      targetProductType = 'kit';
-    } else if (group.parentModeloId) {
-      targetProductId = group.parentModeloId;
-      targetProductType = 'modelo';
-    } else if (group.parentPecaId) {
-      targetProductId = group.parentPecaId;
-      targetProductType = 'peca';
-    }
-
     Object.entries(producedQuantities).forEach(([parteId, quantidadeProduzida]) => {
+      if (quantidadeProduzida <= 0) return;
+
       const parteInfo = group.partesNoGrupo[parteId];
       const quantidadeEsperada = parteInfo.quantidade;
       const excedente = quantidadeProduzida - quantidadeEsperada;
+      const peca = getPecaForParte(parteId);
 
-      // Adiciona a parte produzida para o pedido
-      if (quantidadeEsperada > 0) {
+      let targetProductId: string | undefined;
+      let targetProductType: ProducedPartData['targetProductType'];
+
+      if (group.parentKitId) {
+        targetProductId = group.parentModeloId ? group.parentModeloId : undefined;
+        targetProductType = 'kit';
+      } else if (group.parentModeloId) {
+        targetProductId = peca?.id;
+        targetProductType = 'modelo';
+      } else if (group.parentPecaId) {
+        targetProductId = group.parentPecaId;
+        targetProductType = 'peca';
+      } else {
+        targetProductId = peca?.id;
+        targetProductType = 'produto_final';
+      }
+
+      const isPeca = group.pecaTipoDetalhado !== 'simples';
+
+      const commonData: Omit<ProducedPartData, 'quantidadeProduzida' | 'destinoProducao' | 'locais'> = {
+        parteId,
+        targetProductType,
+        tipoProdutoGerado: isPeca ? 'peca' : 'parte',
+      };
+
+      if (targetProductId) {
+        commonData.targetProductId = targetProductId;
+      }
+      // Ensure parentPecaId is always set if a peca is found
+      if (peca?.id) {
+        commonData.parentPecaId = peca.id;
+      }
+      if (group.parentModeloId) {
+        commonData.parentModeloId = group.parentModeloId;
+      }
+      if (group.parentKitId) {
+        commonData.parentKitId = group.parentKitId;
+      }
+      if (group.sourceName) {
+        commonData.sourceName = group.sourceName;
+      }
+
+      const quantidadeParaPedido = Math.min(quantidadeProduzida, quantidadeEsperada);
+      if (quantidadeParaPedido > 0) {
         finalProducedParts.push({
-          parteId,
-          quantidadeProduzida: quantidadeEsperada,
-          pecaId: group.parentPecaId, // Keep pecaId for context if needed elsewhere
+          ...commonData,
+          quantidadeProduzida: quantidadeParaPedido,
           destinoProducao: 'pedido',
-          targetProductId: targetProductId, // Use dynamically determined ID
-          targetProductType: targetProductType, // Use dynamically determined type
         });
       }
 
-      // Adiciona o excedente com seu destino específico
       if (excedente > 0) {
         const destinoExcedente = excessDestinations[parteId];
         if (destinoExcedente === 'estoque') {
           finalProducedParts.push({
-            parteId,
+            ...commonData,
             quantidadeProduzida: excedente,
-            pecaId: group.parentPecaId, // Keep pecaId for context if needed elsewhere
             destinoProducao: 'estoque',
-            localEstoqueId: selectedStockLocations[parteId],
+            locais: selectedStockLocations[parteId] ? [{ recipienteId: selectedStockLocations[parteId], quantidade: excedente }] : [],
           });
         } else if (destinoExcedente === 'montagem') {
           finalProducedParts.push({
-            parteId,
+            ...commonData,
             quantidadeProduzida: excedente,
-            pecaId: group.parentPecaId, // Keep pecaId for context if needed elsewhere
             destinoProducao: 'montagem_avulsa',
-            targetProductId: targetProductId, // Use dynamically determined ID
-            targetProductType: targetProductType, // Use dynamically determined type
           });
         }
       }
     });
-  
+
     const data: ConcludeData = {
       group: group,
       producedParts: finalProducedParts,
     };
-  
+
     onConclude(data);
     onClose();
   };

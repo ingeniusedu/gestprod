@@ -24,26 +24,69 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
         isComposta: initialData.isComposta || false,
         tempoMontagem: initialData.tempoMontagem || '',
         gruposImpressao: initialData.gruposImpressao || [],
-        outrosInsumos: initialData.outrosInsumos || [], // Load new field
+        outrosInsumos: initialData.outrosInsumos || [],
+        hasAssembly: initialData.hasAssembly || false, // Load hasAssembly
+        tipoPeca: initialData.tipoPeca || 'simples', // Load tipoPeca
       });
     } else if (isOpen) {
-      // Reset form when opening for a new peca
       setPeca({
         sku: '',
         nome: '',
         isComposta: false,
         tempoMontagem: '',
-          gruposImpressao: [{
-            id: `grupo-${Date.now()}`,
-            nome: 'Grupo Principal',
-            filamentos: [],
-            outrosInsumos: [], // Initialize new field
-            partes: [],
-            tempoImpressao: '',
-          }]
+        gruposImpressao: [{
+          id: `grupo-${Date.now()}`,
+          nome: 'Grupo Principal',
+          filamentos: [],
+          outrosInsumos: [],
+          partes: [],
+          tempoImpressao: '',
+        }],
+        hasAssembly: false, // Initialize hasAssembly
+        tipoPeca: 'simples', // Initialize tipoPeca
       });
     }
   }, [initialData, isOpen]);
+
+  // Effect to calculate tipoPeca and hasAssembly
+  useEffect(() => {
+    let newTipoPeca = 'simples';
+    let newHasAssembly = false;
+
+    if (peca.isComposta) {
+      if (peca.gruposImpressao.length === 1) {
+        // Check if the piece itself has assembly time OR if any part in the single group has hasAssembly: true
+        const hasPieceAssemblyTime = peca.tempoMontagem && Number(peca.tempoMontagem) > 0;
+        const singleGroup = peca.gruposImpressao[0];
+        const hasPartAssembly = singleGroup && singleGroup.partes && singleGroup.partes.some(parte => parte.hasAssembly);
+        
+        newHasAssembly = hasPieceAssemblyTime || hasPartAssembly;
+
+        if (newHasAssembly) {
+          newTipoPeca = 'composta_um_grupo_com_montagem';
+        } else {
+          newTipoPeca = 'composta_um_grupo_sem_montagem';
+        }
+      } else if (peca.gruposImpressao.length > 1) {
+        newTipoPeca = 'composta_multiplos_grupos';
+        // For multiple groups, check if the piece itself has assembly time OR if any part in any group has hasAssembly: true
+        const hasPieceAssemblyTime = peca.tempoMontagem && Number(peca.tempoMontagem) > 0;
+        const hasAnyPartAssembly = peca.gruposImpressao.some(grupo => 
+          grupo.partes && grupo.partes.some(parte => parte.hasAssembly)
+        );
+        newHasAssembly = hasPieceAssemblyTime || hasAnyPartAssembly;
+      }
+    }
+
+    // Only update if there's a change to avoid infinite loops
+    if (peca.tipoPeca !== newTipoPeca || peca.hasAssembly !== newHasAssembly) {
+      setPeca(prevPeca => ({
+        ...prevPeca,
+        tipoPeca: newTipoPeca,
+        hasAssembly: newHasAssembly,
+      }));
+    }
+  }, [peca.isComposta, peca.gruposImpressao, peca.tempoMontagem, peca.tipoPeca, peca.hasAssembly]); // Add peca.tempoMontagem to dependencies
 
   if (!isOpen) return null;
 
@@ -58,7 +101,11 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
       if (!grupo.nome || !grupo.tempoImpressao || Number(grupo.tempoImpressao) <= 0) {
         return false;
       }
-      if (grupo.filamentos.length === 0 && (grupo.outrosInsumos || []).length === 0) return false; // Must have at least one insumo
+      if (grupo.filamentos.length === 0 && (grupo.outrosInsumos || []).length === 0 && (!peca.isComposta || grupo.partes.length === 0)) {
+        // For composite pieces, if no insumos, parts must be present.
+        // For simple pieces, at least one insumo is required.
+        return false;
+      }
       
       for (const insumo of grupo.filamentos) { // Validate filaments
         if (!insumo.grupoFilamentoId || !insumo.quantidade || Number(insumo.quantidade) <= 0) {
@@ -87,7 +134,11 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
   const handleSubmit = (e) => {
     e.preventDefault();
     
-    let pecaParaSalvar = { ...peca };
+    let pecaParaSalvar = { 
+      ...peca,
+      tipoPeca: peca.tipoPeca, // Ensure tipoPeca is explicitly included
+      hasAssembly: peca.hasAssembly, // Ensure hasAssembly is explicitly included
+    };
     if (initialData?.id) {
       pecaParaSalvar.id = initialData.id;
     }
@@ -95,7 +146,7 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
     onSave(pecaParaSalvar);
     
     // Reset state and close
-    setPeca({ sku: '', nome: '', isComposta: false, tempoMontagem: '', gruposImpressao: [] });
+    setPeca({ sku: '', nome: '', isComposta: false, tempoMontagem: '', gruposImpressao: [], hasAssembly: false, tipoPeca: 'simples' });
     setCurrentStep(1);
     onClose();
   };
@@ -201,6 +252,7 @@ export default function PecaFormModal({ isOpen, onClose, onSave, initialData, in
                     id: Date.now().toString(),
                     nome: `Grupo ${peca.gruposImpressao.length + 1}`,
                     filamentos: [], // Initialize with empty array to allow adding any type of insumo
+                    outrosInsumos: [], // Initialize new field
                     partes: [],
                     tempoImpressao: ''
                   };

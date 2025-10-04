@@ -4,6 +4,7 @@ import { db as firestore } from '../services/firebase';
 import { collection, addDoc, doc, updateDoc } from 'firebase/firestore';
 import ModeloSelectionModal from './ModeloSelectionModal';
 import PecaSelectionModal from './PecaSelectionModal';
+import { cleanObject } from '../utils/cleanObject';
 
 const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCosts }) => {
   const [sku, setSku] = useState('');
@@ -115,7 +116,7 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
       return;
     }
 
-    const kitData = {
+    const kitData = cleanObject({
       sku,
       nome,
       componentes: componentes.map(comp => ({
@@ -128,7 +129,7 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
       custoCalculado: custoTotal,
       tempoMontagem: tempoMontagemTotal,
       consumoFilamento: consumoFilamentoTotal,
-    };
+    });
 
     try {
       if (kit) {
@@ -143,11 +144,24 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
   };
 
   const handleSelectComponentes = (selectedItems, type) => {
-    const newComponents = selectedItems.map(item => ({
-      ...item,
-      quantidade: item.quantidade || 1,
-      tipo: type,
-    }));
+    const newComponents = selectedItems.map(item => {
+      if (type === 'peca') {
+        // Extract id, nome, sku from the nested 'peca' object
+        return {
+          id: item.peca.id,
+          nome: item.peca.nome,
+          sku: item.peca.sku,
+          quantidade: item.quantidade || 1,
+          tipo: type,
+        };
+      }
+      // For 'modelo' type, properties are directly on the item
+      return {
+        ...item,
+        quantidade: item.quantidade || 1,
+        tipo: type,
+      };
+    });
 
     setComponentes(prev => {
       const filteredPrev = prev.filter(comp => comp.tipo !== type);

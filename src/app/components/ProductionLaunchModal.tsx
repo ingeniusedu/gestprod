@@ -2,8 +2,9 @@ import React, { Fragment, useState, useEffect } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { X } from 'lucide-react';
 import { ProductionGroup, Parte, Peca, Modelo, OptimizedGroup } from '../types';
-import { db } from '../services/firebase';
+import { db, auth } from '../services/firebase';
 import { collection, addDoc, updateDoc, doc, getDoc, getDocs, Timestamp } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { v4 as uuidv4 } from 'uuid';
 import ProductionExcessStockModal from './ProductionExcessStockModal'; // Import the new modal
 
@@ -37,17 +38,31 @@ export default function ProductionLaunchModal({
   const [allPartes, setAllPartes] = useState<Parte[]>([]);
 
   useEffect(() => {
-    const fetchProductData = async () => {
-      const pecasSnapshot = await getDocs(collection(db, 'pecas'));
-      const pecasList = pecasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Peca));
-      setAllPecas(pecasList);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        const fetchProductData = async () => {
+          try {
+            const pecasSnapshot = await getDocs(collection(db, 'pecas'));
+            const pecasList = pecasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Peca));
+            setAllPecas(pecasList);
 
-      const partesSnapshot = await getDocs(collection(db, 'partes')); // Assuming 'partes' collection exists
-      const partesList = partesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Parte));
-      setAllPartes(partesList);
-    };
+            const partesSnapshot = await getDocs(collection(db, 'partes')); // Assuming 'partes' collection exists
+            const partesList = partesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Parte));
+            setAllPartes(partesList);
+          } catch (error) {
+            console.error("Error fetching product data: ", error);
+          }
+        };
 
-    fetchProductData();
+        fetchProductData();
+      } else {
+        // Clear data if user is not authenticated
+        setAllPecas([]);
+        setAllPartes([]);
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {

@@ -12,7 +12,8 @@ import {
   Menu,
   X,
   User,
-  Printer // Import Printer icon
+  Printer, // Import Printer icon
+  Image // Import Image icon for metadata
 } from 'lucide-react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../services/firebase';
@@ -26,6 +27,7 @@ const navigation = [
   { name: 'Mapa de Estoque', href: '/mapa-estoque', icon: Warehouse }, // New: Mapa de Estoque
   { name: 'Modelos de Recipiente', href: '/modelos-recipiente', icon: Package },
   { name: 'Relatórios', href: '/relatorios', icon: BarChart3 },
+  { name: 'Gestão de Metadados', href: '/metadata-gestao', icon: Image }, // New: Metadata Management
 ];
 
 export default function Layout({ children }) {

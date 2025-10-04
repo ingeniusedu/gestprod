@@ -24,8 +24,7 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
     match /pedidos/{document=**} {
-      allow read, create, update: if request.auth != null;
-      allow delete: if false; // Proibir exclusão de pedidos
+      allow read, create, update, delete: if request.auth != null;
     }
     match /locaisProdutos/{document=**} {
       allow read, write: if request.auth != null;
@@ -72,6 +71,15 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
     match /gruposProducaoOtimizados/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    match /gruposMontagem/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    match /lancamentosMontagens/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    match /productMetadata/{document=**} {
       allow read, write: if request.auth != null;
     }
   }

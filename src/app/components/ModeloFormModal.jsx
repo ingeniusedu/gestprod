@@ -36,19 +36,38 @@ const ModeloFormModal = ({ isOpen, onClose, modelo, onSave }) => {
   }, []);
 
   useEffect(() => {
-    if (modelo) {
-      setSku(modelo.sku);
-      setNome(modelo.nome);
-      setTempoMontagemAdicional(modelo.tempoMontagemAdicional || 0);
-      setPecas(modelo.pecas || []);
-      setInsumosAdicionais(modelo.insumosAdicionais || []);
-    } else {
-      setSku('');
-      setNome('');
-      setTempoMontagemAdicional(0);
-      setPecas([]);
-      setInsumosAdicionais([]);
-    }
+    const loadModeloData = async () => {
+      if (modelo) {
+        setSku(modelo.sku);
+        setNome(modelo.nome);
+        setTempoMontagemAdicional(modelo.tempoMontagemAdicional || 0);
+
+        const fetchedPecas = await Promise.all(
+          (modelo.pecas || []).map(async (item) => {
+            const pecaDoc = await getDoc(doc(firestore, 'pecas', item.pecaId));
+            return pecaDoc.exists() ? { peca: { id: pecaDoc.id, ...pecaDoc.data() }, quantidade: item.quantidade } : null;
+          })
+        );
+        setPecas(fetchedPecas.filter(Boolean));
+
+        const fetchedInsumos = await Promise.all(
+          (modelo.insumosAdicionais || []).map(async (item) => {
+            const insumoDoc = await getDoc(doc(firestore, 'insumos', item.insumoId));
+            return insumoDoc.exists() ? { insumo: { id: insumoDoc.id, ...insumoDoc.data() }, quantidade: item.quantidade } : null;
+          })
+        );
+        setInsumosAdicionais(fetchedInsumos.filter(Boolean));
+
+      } else {
+        setSku('');
+        setNome('');
+        setTempoMontagemAdicional(0);
+        setPecas([]);
+        setInsumosAdicionais([]);
+      }
+    };
+
+    loadModeloData();
   }, [modelo]);
 
   useEffect(() => {

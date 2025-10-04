@@ -1,4 +1,4 @@
-import { Pedido, Kit, Modelo, Peca, Parte, PosicaoEstoque, Insumo, GrupoDeFilamento } from '../types';
+import { Pedido, Kit, Modelo, Peca, Parte, PosicaoEstoque, Insumo, GrupoDeFilamento, GrupoMontagem } from '../types';
 import { LocalProduto, Recipiente, LocalInsumo } from '../types/mapaEstoque';
 
 // --- Estruturas de Dados de Saída ---
@@ -44,6 +44,7 @@ export interface AllProductsData {
   locaisProdutos: LocalProduto[];
   locaisInsumos: LocalInsumo[];
   recipientes: Recipiente[];
+  assemblyGroups: GrupoMontagem[]; // Added for hierarchical summary
 }
 
 // --- Funções Utilitárias (Internas) ---

@@ -1,5 +1,5 @@
 export interface LocalProduto {
-  id?: string;
+  id: string;
   nome: string;
   tipo: 'gaveta' | 'prateleira' | 'armario' | 'outro';
   dimensoesGrade?: {
@@ -17,7 +17,7 @@ export interface LocalProduto {
 }
 
 export interface LocalInsumo {
-  id?: string;
+  id: string;
   nome: string;
   tipo: 'gaveta' | 'prateleira' | 'armario' | 'outro';
   dimensoesGrade?: {
@@ -43,7 +43,7 @@ export interface OcupanteDivisao {
 }
 
 export interface Recipiente {
-  id?: string;
+  id: string;
   nome: string; // Instance name, e.g., "Bandeja de Peças Azuis"
   modeloRecipienteId: string; // Reference to the template
   
@@ -70,4 +70,13 @@ export interface Recipiente {
   produtoAssociadoId?: string;
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+export interface PosicaoEstoque {
+  recipienteId?: string;
+  quantidade: number;
+  divisao?: { h: number; v: number } | null;
+  localId?: string;
+  localNome?: string;
+  posicaoNaGrade?: { x: number; y: number; z: number };
 }

@@ -25,27 +25,45 @@ export default function Pedidos() {
     setIsProductionOrderModalOpen(true);
   };
 
+  const formatTimestampToCustomString = (timestamp) => {
+    if (!timestamp) return '';
+
+    // Convert Firebase timestamp to JavaScript Date
+    const date = new Date(
+      (timestamp.seconds || 0) * 1000 + 
+      (timestamp.nanoseconds || 0) / 1000000
+    );
+
+    // Months array for custom formatting
+    const months = [
+      'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 
+      'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
+    ];
+
+    // Pad single digit numbers with leading zero
+    const pad = (num) => num.toString().padStart(2, '0');
+
+    // Format date components
+    const day = pad(date.getDate());
+    const month = months[date.getMonth()];
+    const year = date.getFullYear();
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    return `${day} de ${month} de ${year}`;
+  };
+
   const fetchPedidos = async () => {
     try {
       const querySnapshot = await getDocs(collection(db, 'pedidos'));
       const pedidosList = querySnapshot.docs.map(doc => {
         const data = doc.data();
-        const convertToDate = (timestampOrDate) => {
-          if (timestampOrDate && typeof timestampOrDate.toDate === 'function') {
-            return timestampOrDate.toDate(); // It's a Firebase Timestamp
-          }
-          if (timestampOrDate instanceof Date) {
-            return timestampOrDate; // It's already a JavaScript Date object
-          }
-          return null; // If neither, return null
-        };
-
         return {
           id: doc.id,
           ...data,
-          dataCriacao: convertToDate(data.dataCriacao),
-          dataPrevisao: convertToDate(data.dataPrevisao),
-          dataConclusao: convertToDate(data.dataConclusao),
+          dataCriacao: data.dataCriacao ? formatTimestampToCustomString(data.dataCriacao) : '',
+          dataPrevisao: data.dataPrevisao ? formatTimestampToCustomString(data.dataPrevisao) : '',
+          dataConclusao: data.dataConclusao ? formatTimestampToCustomString(data.dataConclusao) : '',
+          custos: data.custos || { total: 0, insumos: 0, tempo: 0, filamento: 0 },
         };
       });
       setPedidos(pedidosList);
@@ -109,16 +127,23 @@ export default function Pedidos() {
     }
   };
 
-  const formatDate = (date) => {
-    if (!date) return '';
-    return date.toLocaleDateString('pt-BR');
+  const calculateTotalCost = (pedido) => {
+    const custos = pedido.custos || {};
+    return (
+      (custos.insumos || 0) + 
+      (custos.tempo || 0) + 
+      (custos.filamento || 0)
+    ).toFixed(2);
   };
 
   const filteredPedidos = pedidos.filter(pedido => {
-    const matchesSearch = pedido.numero.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         pedido.comprador.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch = (pedido.numero || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         (pedido.comprador || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'todos' || pedido.status === statusFilter;
     return matchesSearch && matchesStatus;
+  }).sort((a, b) => {
+    // Sort by pedido.numero in ascending order
+    return (a.numero || '').localeCompare(b.numero || '');
   });
 
   return (
@@ -225,7 +250,7 @@ export default function Pedidos() {
                           #{pedido.numero}
                         </div>
                         <div className="text-sm text-gray-500">
-                          {pedido.produtos.length} produto(s)
+                          {(pedido.produtos || []).length} produto(s)
                         </div>
                       </div>
                     </td>
@@ -238,13 +263,13 @@ export default function Pedidos() {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatDate(pedido.dataCriacao)}
+                      {pedido.dataCriacao}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatDate(pedido.dataPrevisao)}
+                      {pedido.dataPrevisao}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      R$ {pedido.custos.total.toFixed(2)}
+                      R$ {calculateTotalCost(pedido)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex space-x-2">
