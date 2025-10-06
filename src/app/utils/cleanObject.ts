@@ -1,5 +1,3 @@
-import { FieldValue } from 'firebase/firestore';
-
 export function cleanObject(obj: any): any {
   if (Array.isArray(obj)) {
     const cleanedArray = obj.map(v => cleanObject(v)).filter(v => v !== undefined);

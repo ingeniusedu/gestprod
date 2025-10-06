@@ -592,7 +592,7 @@ export default function Producao() {
     } else if (activeTab === 'em_montagem_modelo') {
       return assemblyGroups.filter(group => group.targetProductType === 'modelo' && group.status !== 'montado');
     } else if (activeTab === 'em_montagem_kit') {
-      return assemblyGroups.filter(group => group.targetProductType === 'kit');
+      return assemblyGroups.filter(group => group.targetProductType === 'kit' && group.status !== 'montado');
     } else if (activeTab === 'processando_embalagem') {
       return assemblyGroups.filter(group => group.targetProductType === 'produto_final');
     } else if (activeTab === 'finalizados') {
@@ -966,6 +966,48 @@ export default function Producao() {
       
     } catch (error) {
       console.error("Erro ao concluir montagem de modelo:", error);
+      toast.error("Ocorreu um erro ao concluir a montagem. Verifique o console para mais detalhes.");
+    }
+  }, [auth.currentUser, serverTimestamp, cleanObject]);
+
+  const handleConcluirMontagemKit = useCallback(async (assemblyGroup: GrupoMontagem) => {
+    if (!auth.currentUser) {
+      toast.error("Você precisa estar logado para concluir a montagem.");
+      return;
+    }
+
+    try {
+      const payload: Record<string, any> = {
+        assemblyGroupId: assemblyGroup.id ?? '',
+        assemblyInstanceId: assemblyGroup.assemblyInstanceId ?? null,
+        targetProductId: assemblyGroup.targetProductId ?? '',
+        targetProductType: 'kit',
+        parentKitId: assemblyGroup.parentKitId ?? null,
+        quantidade: 1, // A kit assembly conclusion represents a single instance
+        proximoEvento: 'entrada_kit_embalagem',
+      };
+
+      if (assemblyGroup.modelosNecessarios && Array.isArray(assemblyGroup.modelosNecessarios) && assemblyGroup.modelosNecessarios.length > 0) {
+        payload.modelosNecessarios = assemblyGroup.modelosNecessarios.map((modelo) => ({
+          modeloId: modelo.modeloId,
+          nome: modelo.nome ?? '',
+          quantidade: modelo.quantidade,
+          quantidadeAtendida: (modelo.atendimentoDetalhado || []).reduce((sum, item) => sum + item.quantidade, 0),
+          atendimentoDetalhado: modelo.atendimentoDetalhado ?? [],
+        }));
+      }
+
+      await addDoc(collection(db, 'lancamentosProducao'), cleanObject({
+        tipoEvento: 'conclusao_montagem_kit',
+        timestamp: serverTimestamp(),
+        usuarioId: auth.currentUser.uid,
+        payload: payload,
+      }));
+      
+      toast.success("Montagem de kit concluída com sucesso!");
+      
+    } catch (error) {
+      console.error("Erro ao concluir montagem de kit:", error);
       toast.error("Ocorreu um erro ao concluir a montagem. Verifique o console para mais detalhes.");
     }
   }, [auth.currentUser, serverTimestamp, cleanObject]);
@@ -1452,6 +1494,7 @@ export default function Producao() {
                       })}
                     </ul>
                     <button
+                      onClick={() => handleConcluirMontagemKit(assemblyGroup)}
                       disabled={!canConcludeAssembly}
                       className="w-full mt-4 inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
                     >
@@ -1526,12 +1569,12 @@ export default function Producao() {
                     <div className="mt-4">
                       <h4 className="text-lg font-semibold">Produtos Finais Necessários:</h4>
                       <div className="space-y-2">
-                        {((assemblyGroup.produtosFinaisNecessarios ?? []) as ProdutoFinalNecessario[]).map((produto, index) => (
+                        {((assemblyGroup.produtosFinaisNecessarios ?? []) as ProdutoFinalNecessario[]).map((produto: ProdutoFinalNecessario, index) => (
                           <PackagingOrderItem
                             key={produto.produtoId || `item-${index}`}
                             item={produto}
-                            type={produto.tipo}
-                            assemblyGroupId={assemblyGroup.id as string || ''}
+                            type={produto.tipo as 'kit' | 'modelo' | 'peca'}
+                            assemblyGroupId={assemblyGroup.id ?? ''}
                             isPackagingStarted={isPackagingStarted[assemblyGroup.id ?? ''] || false}
                             checkedItems={checkedItems[assemblyGroup.id ?? ''] || {}}
                             onToggleItem={handleToggleItem}

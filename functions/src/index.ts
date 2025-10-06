@@ -15,7 +15,9 @@ import { handleConclusaoMontagemModelo } from "./handlers/production/handleConcl
 import { handleEntradaPecaMontagemKit } from "./handlers/production/handleEntradaPecaMontagemKit"; // New import
 import { handleEntradaModeloMontagemKit } from "./handlers/production/handleEntradaModeloMontagemKit"; // New import
 import { handleEntradaPecaEmbalagem } from "./handlers/production/handleEntradaPecaEmbalagem"; // New import
-import { handleEntradaModeloEmbalagem } from "./handlers/production/handleEntradaModeloEmbalagem"; // New import
+import { handleEntradaModeloEmbalagem } from "./handlers/production/handleEntradaModeloEmbalagem"; // New import - re-evaluating import
+import { handleEntradaKitEmbalagem } from "./handlers/production/handleEntradaKitEmbalagem"; // New import
+// handleConclusaoMontagemKit import removed to use dynamic import due to TS resolution issues.
 
 admin.initializeApp(); // Initialize Firebase Admin SDK once at the top level
 
@@ -79,6 +81,11 @@ export const processLancamentoProducao = onDocumentCreated({
                 return await handleEntradaPecaEmbalagem(event);
             case 'entrada_modelo_embalagem': // New case
                 return await handleEntradaModeloEmbalagem(event);
+            case 'entrada_kit_embalagem': // New case
+                return await handleEntradaKitEmbalagem(event);
+            case 'conclusao_montagem_kit': // New case
+                const { handleConclusaoMontagemKit } = await import('./handlers/production/handleConclusaoMontagemKit.js');
+                return await handleConclusaoMontagemKit({ data: event.data as admin.firestore.QueryDocumentSnapshot });
             default:
                 console.error(`Tipo de evento desconhecido: ${lancamento.tipoEvento}`);
                 throw new Error(`Tipo de evento desconhecido: ${lancamento.tipoEvento}`);

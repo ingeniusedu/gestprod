@@ -171,7 +171,7 @@ export interface GrupoImpressao {
 export interface Peca {
   id: string;
   nome: string;
-  tipoPeca: string;
+  tipoPeca: 'simples' | 'composta_um_grupo_sem_montagem' | 'composta_um_grupo_com_montagem' | 'composta_multiplos_grupos';
   SKU: string;
   estoqueTotal?: number;
   posicoesEstoque?: PosicaoEstoque[];

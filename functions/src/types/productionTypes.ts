@@ -31,12 +31,31 @@ export enum LancamentoProducaoTipoEvento {
     ENTRADA_PECA_MONTAGEM_MODELO = 'entrada_peca_montagem_modelo',
     ENTRADA_PECA_MONTAGEM_KIT = 'entrada_peca_montagem_kit',
     ENTRADA_KIT_EMBALAGEM = 'entrada_kit_embalagem',
+    ENTRADA_ESTOQUE_KIT = 'entrada_estoque_kit', // New case
+    ENTRADA_PEDIDO_KIT = 'entrada_pedido_kit', // New case
     CONCLUSAO_MONTAGEM_PECA = 'conclusao_montagem_peca',
     CONCLUSAO_MONTAGEM_MODELO = 'conclusao_montagem_modelo',
+    CONCLUSAO_MONTAGEM_KIT = 'conclusao_montagem_kit', // Add this
     ENTRADA_MODELO_MONTAGEM_KIT = 'entrada_modelo_montagem_kit',
     ENTRADA_MODELO_EMBALAGEM = 'entrada_modelo_embalagem',
     ENTRADA_ESTOQUE_MODELO = 'entrada_estoque_modelo', // New case
     ENTRADA_PEDIDO_MODELO = 'entrada_pedido_modelo', // New case
+}
+
+export interface ConclusaoMontagemKitPayload {
+    assemblyGroupId: string;
+    assemblyInstanceId: string;
+    targetProductId: string; // The kit ID
+    targetProductType: 'kit';
+    parentKitId: string | null; // Should be null for top-level kits
+    usuarioId: string;
+    quantidade: number; // Should be 1 for a kit assembly
+    modelosNecessarios?: {
+        modeloId: string;
+        nome: string;
+        quantidade: number;
+        atendimentoDetalhado: AtendimentoDetalhado[];
+    }[];
 }
 
 export interface EntradaPecaMontagemKitPayload {
@@ -50,7 +69,10 @@ export interface EntradaKitEmbalagemPayload {
     assemblyInstanceId: string; // ID da instância do kit
     kitId: string; // ID do kit (targetProductId do GrupoMontagem)
     quantidade: number; // Sempre 1 para uma instância de kit
-    locaisDestino?: LocalDestino[];
+    locaisDestino?: {
+        localId: string;
+        tipo: 'estoque' | 'pedido';
+    }[];
 }
 
 export interface EntradaModeloMontagemKitPayload {
@@ -76,7 +98,7 @@ export interface LancamentoProducao {
     tipoEvento: LancamentoProducaoTipoEvento;
     timestamp: admin.firestore.Timestamp | admin.firestore.FieldValue;
     usuarioId: string;
-    payload: CriacaoPedidoPayload | InicioProducaoPayload | ConclusaoProducaoPayload | EntradaPartesPayload | EntradaPecaEmbalagemPayload | EntradaPecaMontagemPayload | EntradaModeloMontagemPayload | EntradaKitMontagemPayload | ConclusaoMontagemPecaPayload | ConclusaoMontagemModeloPayload | EntradaPecaMontagemKitPayload | EntradaKitEmbalagemPayload | EntradaModeloMontagemKitPayload | EntradaEstoquePecaPayload | EntradaPedidoPecaPayload | EntradaEstoqueModeloPayload | EntradaPedidoModeloPayload;
+    payload: CriacaoPedidoPayload | InicioProducaoPayload | ConclusaoProducaoPayload | EntradaPartesPayload | EntradaPecaEmbalagemPayload | EntradaPecaMontagemPayload | EntradaModeloMontagemPayload | EntradaKitMontagemPayload | ConclusaoMontagemPecaPayload | ConclusaoMontagemModeloPayload | ConclusaoMontagemKitPayload | EntradaPecaMontagemKitPayload | EntradaKitEmbalagemPayload | EntradaModeloMontagemKitPayload | EntradaEstoquePecaPayload | EntradaPedidoPecaPayload | EntradaEstoqueModeloPayload | EntradaPedidoModeloPayload | EntradaEstoqueKitPayload | EntradaPedidoKitPayload;
 }
 
 export interface CriacaoPedidoPayload {
@@ -167,6 +189,20 @@ export interface EntradaEstoqueModeloPayload {
 
 export interface EntradaPedidoModeloPayload {
     modeloId: string;
+    quantidade: number;
+    pedidoId: string;
+    assemblyInstanceId: string;
+}
+
+export interface EntradaEstoqueKitPayload {
+    kitId: string;
+    quantidade: number;
+    localId: string;
+    assemblyInstanceId: string;
+}
+
+export interface EntradaPedidoKitPayload {
+    kitId: string;
     quantidade: number;
     pedidoId: string;
     assemblyInstanceId: string;
@@ -413,6 +449,55 @@ export interface ProdutoFinalNecessario {
     quantidadeAtendida?: number;
     modelos?: PackagingModelo[];
     pecas?: PackagingPeca[];
+}
+
+export interface Pedido {
+    id: string;
+    numero: string;
+    status: string;
+    produtos: PedidoProduto[];
+    dataCriacao: admin.firestore.Timestamp;
+    dataConclusao?: admin.firestore.Timestamp;
+}
+
+export interface PedidoProduto {
+    produtoId: string;
+    skuProduto: string;
+    nomeProduto: string;
+    tipo: 'peca' | 'modelo' | 'kit';
+    quantidade: number;
+    statusProducaoItem?: string;
+    gruposImpressao?: {
+        partes?: {
+            parteId: string;
+            sku: string;
+            nome: string;
+            quantidade: number;
+        }[];
+    }[];
+    gruposImpressaoProducao?: GrupoImpressao[];
+    modelosComponentes?: ModeloComponente[];
+    pecasComponentes?: PecaComponente[];
+    atendimentoEstoqueDetalhado?: {
+        partesAtendidas?: { parteId: string; quantidade: number }[];
+    };
+}
+
+export interface LancamentoProduto {
+    id: string;
+    produtoId: string;
+    tipoProduto: 'parte' | 'peca' | 'modelo' | 'kit';
+    tipoMovimento: 'entrada' | 'saida';
+    quantidade?: number;
+    usuario: string;
+    observacao?: string;
+    data: admin.firestore.Timestamp;
+    locais: {
+        recipienteId: string;
+        localId?: string;
+        divisao?: { h: number; v: number } | null;
+        quantidade: number;
+    }[];
 }
 
 export interface ConsolidatedGroup {
