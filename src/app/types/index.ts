@@ -232,8 +232,11 @@ export interface Insumo {
 export interface GrupoDeFilamento {
   id: string;
   nome: string;
+  cor: string;
+  pesoLiquido: number; // Added pesoLiquido
+  fabricante?: string; // Added fabricante
+  material?: string; // Added material
   estoqueTotalGramas?: number;
-  cor?: string;
 }
 
 export interface PecaInsumo {
@@ -406,6 +409,7 @@ export interface LancamentoInsumo {
   detalhes?: string;
   locais?: { recipienteId: string; quantidade: number }[];
   pedidoId?: string;
+  origem?: string; // Added to explicitly state the origin of consumption
 }
 
 export interface LancamentoProduto {
@@ -432,6 +436,37 @@ export interface LancamentoServico {
   quantidade: number;
   data: Timestamp;
   usuario: string;
+}
+
+export interface FilamentSpool {
+  id: string;
+  grupoFilamentoId: string;
+  spoolNumero: number;
+  pesoLiquido: number; // Total capacity of the spool
+  estoqueAtual: number;
+  aberto: boolean;
+  dataAbertura?: Timestamp;
+  finalizadoEm?: Timestamp;
+  operacoes: string[]; // Array of lancamentoIds
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  // Other fields copied from GrupoDeFilamento or specific to the spool
+  nome: string;
+  cor: string;
+  fabricante?: string;
+  material?: string;
+  // Any other relevant fields from the group
+}
+
+export interface NotificacaoFrontend {
+  id?: string;
+  type: 'newSpoolOpened';
+  spoolId: string;
+  spoolNumero: number;
+  grupoFilamentoId: string;
+  grupoFilamentoNome: string;
+  timestamp: Timestamp;
+  read: boolean;
 }
 
 export interface AllProductsData {
