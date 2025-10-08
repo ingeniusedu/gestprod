@@ -309,6 +309,14 @@ export async function handleCriacaoPedido(event: { data?: DocumentSnapshot }) {
                                 quantidade: modelo.quantidade,
                                 atendimentoDetalhado: []
                             }))
+                            // NEW: Add direct pieces of the kit to the GrupoMontagem
+                            ,
+                            pecasNecessarias: produto.pecasComponentes?.map(peca => ({
+                                pecaId: peca.id,
+                                nome: peca.nome,
+                                quantidade: peca.quantidade,
+                                atendimentoDetalhado: []
+                            }))
                         };
 
                         // Encontrar o grupo otimizado correspondente para vincular seu ID

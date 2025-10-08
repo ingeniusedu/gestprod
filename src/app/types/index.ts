@@ -347,18 +347,26 @@ export interface ProdutoFinalNecessario {
   nome: string;
   quantidade: number;
   tipo: 'peca' | 'modelo' | 'kit';
+  modelos?: PackagingModelo[];
+  pecas?: PackagingPeca[];
+  quantidadeAtendida?: number;
+  estoqueAtual?: number;
 }
 
 export interface PackagingModelo {
   modeloId: string;
   nome: string;
   quantidade: number;
+  quantidadeAtendida?: number;
+  estoqueAtual?: number;
 }
 
 export interface PackagingPeca {
   pecaId: string;
   nome: string;
   quantidade: number;
+  quantidadeAtendida?: number;
+  estoqueAtual?: number;
 }
 
 export interface AtendimentoDetalhadoItem {

@@ -30,10 +30,17 @@ export const handleEntradaPecaMontagemKit = async (event: { data?: DocumentSnaps
     }
 
     await db.runTransaction(async (transaction) => {
+        // O assemblyInstanceId do payload é da peça, precisamos derivar o do kit pai.
+        const pieceAssemblyInstanceId = payload.assemblyInstanceId;
+        const pecaId = payload.pecaId;
+        // Extrai o assemblyInstanceId do kit pai do assemblyInstanceId da peça
+        // Ex: "pedidoId-kitId-1-pecaId-1" -> "pedidoId-kitId-1"
+        const parentKitAssemblyInstanceId = pieceAssemblyInstanceId.substring(0, pieceAssemblyInstanceId.indexOf(`-${pecaId}-`));
+
         // 1. Buscar GrupoMontagem do Kit Pai
         const grupoMontagemKitQuery = await transaction.get(
             db.collection('gruposMontagem')
-                .where('assemblyInstanceId', '==', payload.assemblyInstanceId)
+                .where('assemblyInstanceId', '==', parentKitAssemblyInstanceId) // Usar o assemblyInstanceId do kit pai
                 .where('targetProductId', '==', payload.parentKitId)
                 .where('targetProductType', '==', 'kit')
                 .limit(1)
@@ -70,7 +77,7 @@ export const handleEntradaPecaMontagemKit = async (event: { data?: DocumentSnaps
         pecaNecessaria.atendimentoDetalhado.push({
             origem: 'montagem_peca',
             quantidade: payload.quantidade,
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            timestamp: admin.firestore.Timestamp.now(),
         });
 
 
@@ -106,11 +113,16 @@ export const handleEntradaPecaMontagemKit = async (event: { data?: DocumentSnaps
             transaction.set(newLancamentoProducaoRef, newLancamentoProducao);
         }
 
-        transaction.update(grupoMontagemKitDoc.ref, {
+        const updateData: Partial<GrupoMontagem> = {
             status: grupoMontagemKit.status,
-            timestampConclusao: grupoMontagemKit.timestampConclusao,
             pecasNecessarias: grupoMontagemKit.pecasNecessarias,
             modelosNecessarios: grupoMontagemKit.modelosNecessarios,
-        });
+        };
+
+        if (grupoMontagemKit.timestampConclusao !== undefined) {
+            updateData.timestampConclusao = grupoMontagemKit.timestampConclusao;
+        }
+
+        transaction.update(grupoMontagemKitDoc.ref, updateData);
     });
 };

@@ -275,15 +275,17 @@ export interface FilamentoNecessario {
     alternativeFilaments: any[];
     nome?: string;
     id?: string;
+    localEstoqueFilamento?: PosicaoEstoque[]; // Added
 }
 
 export interface OutroInsumoNecessario {
     insumoId: string;
     quantidade: number | string;
-    tipo: 'material';
+    tipo: 'material' | 'tempo' | 'outros' | 'embalagem'; // Updated
     etapaInstalacao: string;
     nome?: string;
     id?: string;
+    localEstoqueInsumo?: PosicaoEstoque[]; // Added
 }
 
 export interface ParteNecessaria {
@@ -531,4 +533,42 @@ export interface ConsolidatedGroup {
     pecaTipoDetalhado: string;
     pedidosOrigem: PedidoOrigem[];
     existingDocIds: string[];
+}
+
+export interface PosicaoEstoque {
+    recipienteId?: string;
+    localId?: string;
+    divisao?: { h: number; v: number } | null;
+    quantidade: number;
+    localNome?: string;
+    posicaoNaGrade?: {
+      x: number;
+      y: number;
+      z: number;
+    };
+}
+
+export interface LancamentoInsumo {
+    // id: string; // Removed id field to allow Firestore to generate it
+    insumoId: string;
+    tipoInsumo: 'filamento' | 'material' | 'outros' | 'embalagem' | 'tempo'; // Added 'tempo'
+    tipoMovimento: 'entrada' | 'saida' | 'ajuste'; // Added 'ajuste'
+    quantidade: number;
+    unidadeMedida: 'gramas' | 'unidades' | 'horas';
+    data: admin.firestore.Timestamp;
+    detalhes?: string;
+    locais?: { recipienteId: string; quantidade: number }[];
+    pedidoId?: string;
+    origem?: string; // Added to explicitly state the origin of consumption
+    usuario?: string; // Added usuario
+}
+
+export interface LancamentoServico {
+    servicoId: 'impressao_3d' | 'embalagem';
+    optimizedGroupId?: string;
+    pedidoId?: string;
+    quantidade: number;
+    data: admin.firestore.Timestamp;
+    usuario: string;
+    origem?: string; // Added origem field
 }

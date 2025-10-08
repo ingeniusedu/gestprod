@@ -381,7 +381,7 @@ export default function Producao() {
             data: Timestamp.fromDate(new Date()),
             locais: [
               {
-                recipienteId: debit.selectedPosition.recipienteId,
+                recipienteId: debit.selectedPosition.recipienteId!, // Non-null assertion
                 divisao: debit.selectedPosition.divisao,
                 quantidade: debit.quantityToDebit,
                 localId: debit.selectedPosition.localId || '',
@@ -440,57 +440,6 @@ export default function Producao() {
           sourceName: group.sourceName,
         },
       }));
-
-      // Lançar insumos consumidos (filamentos)
-      for (const filamento of group.filamentosNecessarios) {
-        if (filamento.quantidade > 0) {
-          const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
-          batch.set(lancamentoInsumoRef, cleanObject({
-            id: uuidv4(),
-            insumoId: filamento.id,
-            tipoInsumo: 'filamento',
-            tipoMovimento: 'saida',
-            quantidade: filamento.quantidade,
-            unidadeMedida: 'gramas',
-            data: Timestamp.now(),
-            detalhes: `Consumo para grupo de impressão otimizado: ${group.sourceName} (ID: ${group.id})`,
-            locais: filamento.localEstoqueFilamento || [], // Assumindo que esta propriedade existe e contém as posições de estoque
-            pedidoId: group.pedidosOrigem[0]?.pedidoId, // Vincular ao primeiro pedido de origem para contexto
-          } as LancamentoInsumo)); // Type assertion
-        }
-      }
-
-      // Lançar outros insumos consumidos (se aplicável para a etapa de impressão)
-      for (const insumo of (group.outrosInsumosNecessarios || [])) {
-        if (insumo.quantidade > 0 && insumo.etapaInstalacao === 'impressao') {
-          const lancamentoInsumoRef = doc(collection(db, 'lancamentosInsumos'));
-          batch.set(lancamentoInsumoRef, cleanObject({
-            id: uuidv4(),
-            insumoId: insumo.id,
-            tipoInsumo: insumo.tipo as 'material' | 'outros',
-            tipoMovimento: 'saida',
-            quantidade: insumo.quantidade,
-            unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades', // Ajustar unidade conforme tipo
-            data: Timestamp.now(),
-            detalhes: `Consumo para grupo de impressão otimizado: ${group.sourceName} (ID: ${group.id})`,
-            locais: insumo.localEstoqueInsumo || [], // Assumindo que esta propriedade existe
-            pedidoId: group.pedidosOrigem[0]?.pedidoId, // Vincular ao primeiro pedido de origem para contexto
-          } as LancamentoInsumo)); // Type assertion
-        }
-      }
-
-      // Lançar tempo de serviço (impressao_3d)
-      if (group.tempoImpressaoGrupo > 0) {
-        const lancamentoServicoRef = doc(collection(db, 'lancamentosServicos'));
-        batch.set(lancamentoServicoRef, cleanObject({
-          servicoId: 'impressao_3d', // ID do serviço de impressão 3D
-          optimizedGroupId: group.id, // Vincular ao grupo otimizado
-          quantidade: group.tempoImpressaoGrupo / 60, // Converter minutos para horas
-          data: Timestamp.now(),
-          usuario: auth.currentUser?.displayName || 'Sistema',
-          pedidoId: group.pedidosOrigem[0]?.pedidoId, // Vincular ao primeiro pedido de origem para contexto
-        } as LancamentoServico)); // Type assertion
-      }
 
       // Lançar produtos produzidos (partes)
       for (const parteProduzida of producedParts) {
@@ -997,6 +946,17 @@ export default function Producao() {
         }));
       }
 
+      // NEW: Add pecasNecessarias to the payload
+      if (assemblyGroup.pecasNecessarias && Array.isArray(assemblyGroup.pecasNecessarias) && assemblyGroup.pecasNecessarias.length > 0) {
+        payload.pecasNecessarias = assemblyGroup.pecasNecessarias.map((peca) => ({
+          pecaId: peca.pecaId,
+          nome: peca.nome ?? '',
+          quantidade: peca.quantidade,
+          quantidadeAtendida: (peca.atendimentoDetalhado || []).reduce((sum, item) => sum + item.quantidade, 0),
+          atendimentoDetalhado: peca.atendimentoDetalhado ?? [],
+        }));
+      }
+
       await addDoc(collection(db, 'lancamentosProducao'), cleanObject({
         tipoEvento: 'conclusao_montagem_kit',
         timestamp: serverTimestamp(),
@@ -1461,10 +1421,14 @@ export default function Producao() {
               (getFilteredDisplayGroups(pedidos) as GrupoMontagem[]).map((assemblyGroup: GrupoMontagem) => {
                 const isAvulsa = assemblyGroup.isAvulsa;
                 const pedidoDisplay = isAvulsa ? "Montagem Avulsa" : `Pedido #${assemblyGroup.pedidoNumero}`;
-                const canConcludeAssembly = assemblyGroup.modelosNecessarios?.every(modelo => {
-                  const calculatedQuantidadeAtendida = (modelo.atendimentoDetalhado || []).reduce((sum, item) => sum + item.quantidade, 0);
-                  return calculatedQuantidadeAtendida >= modelo.quantidade;
-                });
+                const canConcludeAssembly = 
+                  (assemblyGroup.modelosNecessarios ?? []).every(modelo => {
+                    const calculatedQuantidadeAtendida = (modelo.atendimentoDetalhado || []).reduce((sum, item) => sum + item.quantidade, 0);
+                    return calculatedQuantidadeAtendida >= modelo.quantidade;
+                  }) &&
+                  (assemblyGroup.pecasNecessarias ?? []).every(peca => 
+                    (peca.quantidadeAtendida || 0) >= peca.quantidade
+                  );
 
                 return (
                   <div key={assemblyGroup.id} className="bg-white shadow rounded-lg p-6">
@@ -1493,6 +1457,28 @@ export default function Producao() {
                         );
                       })}
                     </ul>
+
+                    <h4 className="text-lg font-semibold text-gray-800 mb-3 mt-6">Peças Necessárias:</h4>
+                    <ul className="list-disc list-inside text-sm space-y-1">
+                      {(assemblyGroup.pecasNecessarias ?? []).map((peca, index) => {
+                        const isFullyAttended = (peca.quantidadeAtendida || 0) >= peca.quantidade;
+                        return (
+                          <li key={index} className={isFullyAttended ? 'text-green-600' : 'text-red-600'}>
+                            {peca.nome}: Necessário {peca.quantidade}, Atendido {peca.quantidadeAtendida || 0}, Estoque Atual {peca.estoqueAtual || 0}
+                            {peca.atendimentoDetalhado && peca.atendimentoDetalhado.length > 0 && (
+                              <ul className="list-disc list-inside ml-4 text-xs text-gray-500">
+                                {peca.atendimentoDetalhado.map((atendimento: { origem: string; quantidade: number; timestamp: any }, attIndex: number) => (
+                                  <li key={attIndex}>
+                                    Origem: {atendimento.origem}, Quantidade: {atendimento.quantidade}, Data: {new Date(atendimento.timestamp.seconds * 1000).toLocaleString()}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+
                     <button
                       onClick={() => handleConcluirMontagemKit(assemblyGroup)}
                       disabled={!canConcludeAssembly}
@@ -1500,7 +1486,7 @@ export default function Producao() {
                     >
                       <CheckCircle className="h-5 w-5 mr-2" /> Concluir Montagem de Kit
                     </button>
-                    {!canConcludeAssembly && <p className="text-xs text-center text-red-600 mt-2">Montagem bloqueada: Modelos insuficientes.</p>}
+                    {!canConcludeAssembly && <p className="text-xs text-center text-red-600 mt-2">Montagem bloqueada: Componentes insuficientes.</p>}
                   </div>
                 );
               })

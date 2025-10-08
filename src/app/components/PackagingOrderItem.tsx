@@ -43,7 +43,7 @@ const PackagingOrderItem: React.FC<PackagingOrderItemProps> = ({
   const textColorClass = isFulfilled ? 'text-green-600' : 'text-red-600';
 
   const hasChildren =
-    (type === 'kit' && (item as ProdutoFinalNecessario).modelos && (item as ProdutoFinalNecessario).modelos!.length > 0) ||
+    (type === 'kit' && ((item as ProdutoFinalNecessario).modelos && (item as ProdutoFinalNecessario).modelos!.length > 0 || (item as ProdutoFinalNecessario).pecas && (item as ProdutoFinalNecessario).pecas!.length > 0)) ||
     (type === 'modelo' && (item as PackagingModelo).pecas && (item as PackagingModelo).pecas!.length > 0);
 
   return (
@@ -89,6 +89,22 @@ const PackagingOrderItem: React.FC<PackagingOrderItemProps> = ({
       {isExpanded && type === 'modelo' && (item as PackagingModelo).pecas && (item as PackagingModelo).pecas!.length > 0 && (
         <div className="ml-6">
           {(item as PackagingModelo).pecas!.map((peca: PackagingPeca) => (
+            <PackagingOrderItem
+              key={peca.pecaId}
+              item={peca}
+              type="peca"
+              assemblyGroupId={assemblyGroupId}
+              isPackagingStarted={isPackagingStarted}
+              checkedItems={checkedItems}
+              onToggleItem={onToggleItem}
+            />
+          ))}
+        </div>
+      )}
+
+      {isExpanded && type === 'kit' && (item as ProdutoFinalNecessario).pecas && (item as ProdutoFinalNecessario).pecas!.length > 0 && (
+        <div className="ml-6">
+          {(item as ProdutoFinalNecessario).pecas!.map((peca: PackagingPeca) => (
             <PackagingOrderItem
               key={peca.pecaId}
               item={peca}

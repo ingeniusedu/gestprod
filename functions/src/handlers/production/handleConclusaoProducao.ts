@@ -9,7 +9,9 @@ import {
     EntradaPartesPayload,
     EntradaPecaEmbalagemPayload,
     EntradaPecaMontagemPayload,
-    LancamentoProducaoTipoEvento // Import the enum
+    LancamentoProducaoTipoEvento, // Import the enum
+    LancamentoInsumo, // Import LancamentoInsumo
+    LancamentoServico // Import LancamentoServico
 } from '../../types/productionTypes';
 
 export async function handleConclusaoProducao(event: { data?: DocumentSnapshot }) {
@@ -134,6 +136,8 @@ export async function handleConclusaoProducao(event: { data?: DocumentSnapshot }
 
             const newLancamentosProducao: LancamentoProducao[] = [];
             const newLancamentosProdutos: any[] = [];
+            const newLancamentosInsumos: LancamentoInsumo[] = []; // New array for insumo launches
+            const newLancamentosServicos: LancamentoServico[] = []; // New array for service launches
 
             // Map to aggregate parts for 'entrada_parte_montagem_peca'
             const aggregatedPartesForPeca: {
@@ -248,6 +252,84 @@ export async function handleConclusaoProducao(event: { data?: DocumentSnapshot }
 
             for (const newLancamento of newLancamentosProducao) {
                 transaction.create(db.collection('lancamentosProducao').doc(newLancamento.id), newLancamento);
+            }
+
+            // Extract group from payload for insumo and service launches
+            const optimizedGroup = actualPayload.group as GrupoProducaoOtimizado;
+            const pedidoIdForContext = optimizedGroup.pedidosOrigem && optimizedGroup.pedidosOrigem.length > 0 ? optimizedGroup.pedidosOrigem[0].pedidoId : undefined;
+
+            // Lançar insumos consumidos (filamentos)
+            if (optimizedGroup.filamentosNecessarios) {
+                for (const filamento of optimizedGroup.filamentosNecessarios) {
+                    if (filamento.quantidade > 0) {
+                        newLancamentosInsumos.push({
+                            // id: uuidv4(), // Removed uuidv4
+                            insumoId: filamento.id!, // Non-null assertion
+                            tipoInsumo: 'filamento',
+                            tipoMovimento: 'saida',
+                            quantidade: filamento.quantidade,
+                            unidadeMedida: 'gramas',
+                            data: admin.firestore.Timestamp.now(),
+                            detalhes: `Consumo para grupo de impressão otimizado: ${optimizedGroup.sourceName} (ID: ${optimizedGroup.id})`,
+                            locais: (filamento.localEstoqueFilamento || []).map(local => ({
+                                recipienteId: local.recipienteId!, // Non-null assertion
+                                quantidade: local.quantidade,
+                            })),
+                            pedidoId: pedidoIdForContext,
+                            usuario: lancamento.usuarioId, // Use usuarioId from the main lancamento
+                            origem: 'producao', // Added origem field
+                        });
+                    }
+                }
+            }
+
+            // Lançar outros insumos consumidos (se aplicável para a etapa de impressão)
+            if (optimizedGroup.outrosInsumosNecessarios) {
+                for (const insumo of optimizedGroup.outrosInsumosNecessarios) {
+                    // Ensure quantidade is a number for comparison
+                    const quantidadeInsumo = typeof insumo.quantidade === 'string' ? parseFloat(insumo.quantidade) : insumo.quantidade;
+
+                    if (quantidadeInsumo > 0 && insumo.etapaInstalacao === 'impressao') {
+                        newLancamentosInsumos.push({
+                            // id: uuidv4(), // Removed uuidv4
+                            insumoId: insumo.id!, // Non-null assertion
+                            tipoInsumo: insumo.tipo, // Use the updated type which includes 'tempo'
+                            tipoMovimento: 'saida',
+                            quantidade: quantidadeInsumo, // Use the parsed number
+                            unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades',
+                            data: admin.firestore.Timestamp.now(),
+                            detalhes: `Consumo para grupo de impressão otimizado: ${optimizedGroup.sourceName} (ID: ${optimizedGroup.id})`,
+                            locais: (insumo.localEstoqueInsumo || []).map(local => ({
+                                recipienteId: local.recipienteId!, // Non-null assertion
+                                quantidade: local.quantidade,
+                            })),
+                            pedidoId: pedidoIdForContext,
+                            usuario: lancamento.usuarioId, // Use usuarioId from the main lancamento
+                            origem: 'producao', // Added origem field
+                        });
+                    }
+                }
+            }
+
+            // Lançar tempo de serviço (impressao_3d)
+            if (optimizedGroup.tempoImpressaoGrupo > 0) {
+                newLancamentosServicos.push({
+                    servicoId: 'impressao_3d',
+                    optimizedGroupId: optimizedGroup.id,
+                    quantidade: optimizedGroup.tempoImpressaoGrupo / 60, // Converter minutos para horas
+                    data: admin.firestore.Timestamp.now(),
+                    usuario: lancamento.usuarioId, // Use usuarioId from the main lancamento
+                    pedidoId: pedidoIdForContext,
+                    origem: 'producao', // Added origem field
+                });
+            }
+
+            // Commit new insumo and service launches
+            for (const newLancamentoInsumo of newLancamentosInsumos) {
+                transaction.create(db.collection('lancamentosInsumos').doc(), newLancamentoInsumo); // Let Firestore generate ID
+            }
+            for (const newLancamentoServico of newLancamentosServicos) {
+                transaction.create(db.collection('lancamentosServicos').doc(), newLancamentoServico); // Let Firestore generate ID for services
             }
 
             if (locaisDestino && locaisDestino.length > 0 && grupo.partesNoGrupo) {
