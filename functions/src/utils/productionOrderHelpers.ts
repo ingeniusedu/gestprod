@@ -324,7 +324,7 @@ export const optimizeAndSplitGruposImpressao = (
                     id: ins.insumo.insumoId || ins.insumo.id,
                     nome: ins.insumo.nome || '',
                     ...ins.insumo,
-                    quantidade: Math.ceil(Number(ins.totalConsolidatedPieceInstances) * (quantityToProduce / totalConsolidatedPieceInstances))
+                    quantidade: Math.ceil((isNaN(Number(ins.totalQuantidade)) ? 0 : Number(ins.totalQuantidade)) * (quantityToProduce / totalConsolidatedPieceInstances))
                 })),
                 tempoImpressaoGrupo: consolidated.tempoImpressao * (quantityToProduce / totalConsolidatedPieceInstances),
                 consumoFilamentoGrupo: consolidated.consumoFilamento * (quantityToProduce / totalConsolidatedPieceInstances),

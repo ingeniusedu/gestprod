@@ -57,7 +57,7 @@ export const useOptimizedGroups = (
           partesNoGrupo[parteId] = {
             ...parteInfo,
             estoqueAtual: estoqueTotal,
-            quantidadeNecessaria: Number(parteInfo.quantidade),
+            quantidadeNecessaria: isNaN(Number(parteInfo.quantidade)) ? 0 : Number(parteInfo.quantidade),
           };
         }
 
@@ -68,7 +68,7 @@ export const useOptimizedGroups = (
             ...filamento,
             nome: filamentGroupDetails?.nome || filamento.nome || 'Desconhecido',
             estoqueAtual: estoqueTotal,
-            quantidadeNecessaria: Number(filamento.quantidade),
+            quantidadeNecessaria: isNaN(Number(filamento.quantidade)) ? 0 : Number(filamento.quantidade),
           };
         });
 
@@ -79,7 +79,7 @@ export const useOptimizedGroups = (
             ...insumo,
             nome: insumoDetails?.nome || insumo.nome || 'Desconhecido',
             estoqueAtual: estoqueTotal,
-            quantidadeNecessaria: Number(insumo.quantidade),
+            quantidadeNecessaria: isNaN(Number(insumo.quantidade)) ? 0 : Number(insumo.quantidade),
           };
         });
 
@@ -165,7 +165,7 @@ export const useOptimizedGroups = (
           partesNoGrupo[parteId] = {
             ...parteInfo,
             estoqueAtual: estoqueTotal,
-            quantidadeNecessaria: Number(parteInfo.quantidade),
+            quantidadeNecessaria: isNaN(Number(parteInfo.quantidade)) ? 0 : Number(parteInfo.quantidade),
           };
         }
 
@@ -176,7 +176,7 @@ export const useOptimizedGroups = (
             ...filamento,
             nome: filamentGroupDetails?.nome || filamento.nome || 'Desconhecido',
             estoqueAtual: estoqueTotal,
-            quantidadeNecessaria: Number(filamento.quantidade),
+            quantidadeNecessaria: isNaN(Number(filamento.quantidade)) ? 0 : Number(filamento.quantidade),
           };
         });
 
@@ -187,7 +187,7 @@ export const useOptimizedGroups = (
             ...insumo,
             nome: insumoDetails?.nome || insumo.nome || 'Desconhecido',
             estoqueAtual: estoqueTotal,
-            quantidadeNecessaria: Number(insumo.quantidade),
+            quantidadeNecessaria: isNaN(Number(insumo.quantidade)) ? 0 : Number(insumo.quantidade),
           };
         });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { db, auth } from '../services/firebase'; // Import auth
 import { collection, getDocs, doc, getDoc, updateDoc, query, where, Timestamp, addDoc, writeBatch, serverTimestamp, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth'; // Import onAuthStateChanged
@@ -21,6 +21,7 @@ import { cleanObject } from '../utils/cleanObject';
 import { SummaryItem } from '../types'; // Import SummaryItem from types/index.ts
 import { useCallback } from 'react'; // Import useCallback
 import { useStockCalculations } from '../hooks/useStockCalculations'; // Import the new hook
+import { useProductionSummary } from '../hooks/useProductionSummary';
 import { useOptimizedGroups } from '../hooks/useOptimizedGroups';
 import { useAssemblyGroups } from '../hooks/useAssemblyGroups'; // Import the new hook
 import { formatTime, formatFilament, calculateEffectiveQuantityFulfilledByComponents, generateProductionGroupsForProduct, getGroupStockStatus, canConcludePedido, formatLocation } from '../utils/producaoUtils';
@@ -56,8 +57,6 @@ export default function Producao() {
 
   const [itemToDebit, setItemToDebit] = useState<ItemToDebit | null>(null); // Use the imported ItemToDebit
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [productionSummary, setProductionSummary] = useState<SummaryItem[]>([]);
-  const [isSummaryLoading, setIsSummaryLoading] = useState<boolean>(true);
 
   const { enrichPosicoesEstoque, getStockForProduct } = useStockCalculations();
   const { assemblyGroups } = useAssemblyGroups(); // Use the hook
@@ -72,6 +71,42 @@ export default function Producao() {
     locaisInsumos,
     recipientes
   );
+
+  const allProducts: AllProductsData = useMemo(() => ({
+    pecas: availablePecas,
+    partes: availablePartes,
+    modelos: availableModels,
+    kits: availableKits,
+    insumos: allInsumos,
+    filamentGroups: availableFilamentGroups,
+    locaisProdutos: locaisProdutos,
+    locaisInsumos: locaisInsumos,
+    recipientes: recipientes,
+    assemblyGroups: assemblyGroups
+  }), [
+    availablePecas,
+    availablePartes,
+    availableModels,
+    availableKits,
+    allInsumos,
+    availableFilamentGroups,
+    locaisProdutos,
+    locaisInsumos,
+    recipientes,
+    assemblyGroups
+  ]);
+
+  const { productionSummary, isSummaryLoading, generateProductionSummary } = useProductionSummary({
+    pedidos,
+    allProducts,
+    optimizedGroups
+  });
+
+  useEffect(() => {
+    if (activeTab === 'visao_geral') {
+      generateProductionSummary();
+    }
+  }, [activeTab, pedidos, allProducts, optimizedGroups, generateProductionSummary]);
 
   // Fetch all static data (insumos, pecas, partes, models, kits, filament groups, locais)
   useEffect(() => {
@@ -95,10 +130,10 @@ export default function Producao() {
         const unsubscribeFilamentGroups = onSnapshot(collection(db, 'gruposDeFilamento'), (snapshot) => {
           setAvailableFilamentGroups(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as GrupoDeFilamento)));
         });
-        const unsubscribeLocaisProdutos = onSnapshot(collection(db, 'locaisProduto'), (snapshot) => {
+        const unsubscribeLocaisProdutos = onSnapshot(collection(db, 'locaisProdutos'), (snapshot) => {
           setLocaisProdutos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as LocalProduto)));
         });
-        const unsubscribeLocaisInsumos = onSnapshot(collection(db, 'locaisInsumo'), (snapshot) => {
+        const unsubscribeLocaisInsumos = onSnapshot(collection(db, 'locaisInsumos'), (snapshot) => {
           setLocaisInsumos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as LocalInsumo)));
         });
         const unsubscribeRecipientes = onSnapshot(collection(db, 'recipientes'), (snapshot) => {
@@ -571,273 +606,6 @@ export default function Producao() {
       toast.error("Falha ao lançar o tempo de embalagem.");
     }
   }, [packagingTime, auth.currentUser, db, Timestamp, cleanObject]);
-
-  const generateProductionSummary = useCallback(
-    async (
-      pedidos: Pedido[],
-      allProducts: AllProductsData,
-      optimizedGroupsMap: Map<string, OptimizedGroup> // Add optimizedGroupsMap parameter
-    ) => {
-      setIsSummaryLoading(true);
-
-      const summaryItemsMap = new Map<string, SummaryItem>();
-
-      // Helper to get or create a SummaryItem
-      const getOrCreateSummaryItem = (
-        documentId: string,
-        productSku: string,
-        name: string,
-        type: SummaryItem['tipo'],
-        level: number
-      ): SummaryItem => {
-        const key = `${type}-${documentId}`; // Use documentId for the map key
-        if (!summaryItemsMap.has(key)) {
-          const { estoqueTotal } = getStockForProduct(
-            documentId, type, allProducts.pecas, allProducts.partes, allProducts.insumos,
-            allProducts.modelos, allProducts.kits, allProducts.filamentGroups,
-            allProducts.locaisProdutos, allProducts.locaisInsumos, allProducts.recipientes
-          );
-          summaryItemsMap.set(key, {
-            documentId: documentId,
-            sku: productSku, // Use productSku for display
-            produtoNome: name,
-            tipo: type,
-            emEstoque: estoqueTotal,
-            necessario: 0,
-            aguardando: 0,
-            emProducao: 0,
-            emMontagemPeca: 0,
-            emMontagemModelo: 0,
-            emMontagemKit: 0,
-            processandoEmbalagem: 0,
-            finalizado: 0,
-            children: [],
-            level: level,
-          });
-        }
-        return summaryItemsMap.get(key)!;
-      };
-
-      // Process all pedidos to build the hierarchical structure and calculate 'necessario'
-      pedidos.filter(p => p.status !== 'concluido' && p.status !== ('cancelado' as any)).forEach(pedido => {
-        pedido.produtos.forEach(pedidoProduto => {
-          let topLevelItem: SummaryItem | undefined;
-
-          if (pedidoProduto.tipo === 'kit') {
-            topLevelItem = getOrCreateSummaryItem(pedidoProduto.produtoId, pedidoProduto.skuProduto, pedidoProduto.nomeProduto, 'kit', 0);
-            topLevelItem.necessario += pedidoProduto.quantidade;
-
-            pedidoProduto.modelosComponentes?.forEach(modeloComponente => {
-              const modeloItem = getOrCreateSummaryItem(modeloComponente.produtoId, modeloComponente.skuProduto, modeloComponente.nomeProduto, 'modelo', 1);
-              modeloItem.necessario += pedidoProduto.quantidade * modeloComponente.quantidade;
-              if (!topLevelItem?.children?.some(c => c.documentId === modeloItem.documentId)) {
-                topLevelItem?.children?.push(modeloItem);
-              }
-
-              modeloComponente.pecasComponentes?.forEach(pecaComponente => {
-                const pecaItem = getOrCreateSummaryItem(pecaComponente.SKU, pecaComponente.SKU, pecaComponente.nome, 'peca', 2);
-                pecaItem.necessario += pedidoProduto.quantidade * modeloComponente.quantidade * pecaComponente.quantidade;
-                if (!modeloItem?.children?.some(c => c.documentId === pecaItem.documentId)) {
-                  modeloItem?.children?.push(pecaItem);
-                }
-
-                pecaComponente.gruposImpressao?.forEach(grupoImpressao => {
-                  grupoImpressao.partes?.forEach(parteRef => {
-                    const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 3);
-                    parteItem.necessario += pedidoProduto.quantidade * modeloComponente.quantidade * pecaComponente.quantidade * parteRef.quantidade;
-                    if (!pecaItem?.children?.some(c => c.documentId === parteItem.documentId)) {
-                      pecaItem?.children?.push(parteItem);
-                    }
-                  });
-                });
-              });
-            });
-          } else if (pedidoProduto.tipo === 'modelo') {
-            topLevelItem = getOrCreateSummaryItem(pedidoProduto.produtoId, pedidoProduto.skuProduto, pedidoProduto.nomeProduto, 'modelo', 0);
-            topLevelItem.necessario += pedidoProduto.quantidade;
-
-            pedidoProduto.pecasComponentes?.forEach(pecaComponente => {
-              const pecaItem = getOrCreateSummaryItem(pecaComponente.SKU, pecaComponente.SKU, pecaComponente.nome, 'peca', 1);
-              pecaItem.necessario += pedidoProduto.quantidade * pecaComponente.quantidade;
-              if (!topLevelItem?.children?.some(c => c.documentId === pecaItem.documentId)) {
-                topLevelItem?.children?.push(pecaItem);
-              }
-
-              pecaComponente.gruposImpressao?.forEach(grupoImpressao => {
-                grupoImpressao.partes?.forEach(parteRef => {
-                  const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 2);
-                  parteItem.necessario += pedidoProduto.quantidade * pecaComponente.quantidade * parteRef.quantidade;
-                  if (!pecaItem?.children?.some(c => c.documentId === parteItem.documentId)) {
-                    pecaItem?.children?.push(parteItem);
-                  }
-                });
-              });
-            });
-          } else if (pedidoProduto.tipo === 'peca') {
-            topLevelItem = getOrCreateSummaryItem(pedidoProduto.produtoId, pedidoProduto.skuProduto, pedidoProduto.nomeProduto, 'peca', 0);
-            topLevelItem.necessario += pedidoProduto.quantidade;
-
-            pedidoProduto.gruposImpressao?.forEach(grupoImpressao => {
-              grupoImpressao.partes?.forEach(parteRef => {
-                const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 1);
-                parteItem.necessario += pedidoProduto.quantidade * parteRef.quantidade;
-                if (!topLevelItem?.children?.some(c => c.documentId === parteItem.documentId)) {
-                  topLevelItem?.children?.push(parteItem);
-                }
-              });
-            });
-          }
-        });
-      });
-
-      // Function to recursively calculate status
-      const calculateStatus = (item: SummaryItem, currentPedidos: Pedido[]) => {
-        item.aguardando = 0;
-        item.emProducao = 0;
-        item.emMontagemPeca = 0;
-        item.emMontagemModelo = 0;
-        item.emMontagemKit = 0;
-        item.processandoEmbalagem = 0;
-        item.finalizado = 0;
-
-        if (Array.isArray(item.children) && item.children.length > 0) {
-          item.children.forEach((child: SummaryItem) => calculateStatus(child, currentPedidos));
-
-          // Aggregate from children
-          const totalChildNecessario = item.children.reduce((sum: number, child: SummaryItem) => sum + child.necessario, 0);
-          if (totalChildNecessario > 0) {
-            item.aguardando = item.children.reduce((sum: number, child: SummaryItem) => sum + child.aguardando, 0);
-            item.emProducao = item.children.reduce((sum: number, child: SummaryItem) => sum + child.emProducao, 0);
-            item.emMontagemPeca = item.children.reduce((sum: number, child: SummaryItem) => sum + child.emMontagemPeca, 0);
-            item.emMontagemModelo = item.children.reduce((sum: number, child: SummaryItem) => sum + child.emMontagemModelo, 0);
-            item.emMontagemKit = item.children.reduce((sum: number, child: SummaryItem) => sum + child.emMontagemKit, 0);
-            item.processandoEmbalagem = item.children.reduce((sum: number, child: SummaryItem) => sum + child.processandoEmbalagem, 0);
-            item.finalizado = item.children.reduce((sum: number, child: SummaryItem) => sum + child.finalizado, 0);
-          }
-        } else {
-          // Base case: Partes or items without children
-          // Use optimizedGroupsMap for 'aguardando' and 'emProducao' statuses
-          optimizedGroupsMap.forEach(group => {
-            if (item.tipo === 'parte' && group.partesNoGrupo && item.documentId) {
-              const parteInfo = group.partesNoGrupo[item.documentId];
-              if (parteInfo) {
-                if (group.status === 'aguardando') item.aguardando += parteInfo.quantidade;
-                else if (group.status === 'em_producao') item.emProducao += parteInfo.quantidade;
-                // 'produzido' status for optimized groups means it's ready for assembly,
-                // which should be reflected in emMontagemPeca, emMontagemModelo, etc.
-                // This is already handled by assemblyGroups below.
-              }
-            }
-          });
-
-          // For pecas, modelos, kits, check assembly groups
-          allProducts.assemblyGroups.forEach(ag => {
-            if (item.documentId && ag.targetProductId) { // Ensure both are defined
-              const currentDocumentId = item.documentId; // Narrow the type
-              const currentTargetProductId = ag.targetProductId; // Narrow the type
-              if (ag.targetProductType === 'peca' && item.tipo === 'peca' && currentTargetProductId === currentDocumentId) {
-                if (ag.status === 'aguardando_montagem' || ag.status === 'em_montagem') item.emMontagemPeca += ag.payload?.quantidade || 0;
-                else if (ag.status === 'montado') item.emMontagemModelo += ag.payload?.quantidade || 0;
-              } else if (ag.targetProductType === 'modelo' && item.tipo === 'modelo' && currentTargetProductId === currentDocumentId) {
-                if (ag.status === 'aguardando_montagem' || ag.status === 'em_montagem') item.emMontagemModelo += ag.payload?.quantidade || 0;
-                else if (ag.status === 'montado') item.emMontagemKit += ag.payload?.quantidade || 0;
-              } else if (ag.targetProductType === 'kit' && item.tipo === 'kit' && currentTargetProductId === currentDocumentId) {
-                if (ag.status === 'aguardando_montagem' || ag.status === 'em_montagem') item.emMontagemKit += ag.payload?.quantidade || 0;
-                else if (ag.status === 'montado') item.processandoEmbalagem += ag.payload?.quantidade || 0;
-              } else if (ag.targetProductType === 'produto_final' && (item.tipo === 'kit' || item.tipo === 'modelo' || item.tipo === 'peca') && currentTargetProductId === currentDocumentId) {
-                if (ag.status === 'produzido_aguardando_embalagem') item.processandoEmbalagem += ag.payload?.quantidade || 0;
-                else if (ag.status === 'embalado') item.finalizado += ag.payload?.quantidade || 0;
-              }
-            }
-          });
-        }
-      };
-
-      // Get all top-level items (kits, models, pecas that are not children)
-      const topLevelSummaryItems: SummaryItem[] = [];
-      summaryItemsMap.forEach(item => {
-        // Check if this item is a child of any other item in the map
-        let isChild = false;
-        summaryItemsMap.forEach(potentialParent => {
-          if (potentialParent.children?.some((child: SummaryItem) => child.documentId === item.documentId && child.tipo === item.tipo)) {
-            isChild = true;
-          }
-        });
-        if (!isChild && item.necessario > 0) {
-          topLevelSummaryItems.push(item);
-        }
-      });
-
-      // Sort top-level items by type (kits first, then models, then pecas) and then by name
-      topLevelSummaryItems.sort((a: SummaryItem, b: SummaryItem) => {
-        const typeOrder: { [key: string]: number } = { 'kit': 0, 'modelo': 1, 'peca': 2, 'parte': 3 };
-        if (typeOrder[a.tipo] !== typeOrder[b.tipo]) {
-          return typeOrder[a.tipo] - typeOrder[b.tipo];
-        }
-        return a.produtoNome.localeCompare(b.produtoNome);
-      });
-
-      // Recursively sort children
-      const sortChildren = (items: SummaryItem[]) => {
-        items.forEach(item => {
-          if (item.children && item.children.length > 0) {
-            item.children.sort((a: SummaryItem, b: SummaryItem) => {
-              const typeOrder: { [key: string]: number } = { 'kit': 0, 'modelo': 1, 'peca': 2, 'parte': 3 };
-              if (typeOrder[a.tipo] !== typeOrder[b.tipo]) {
-                return typeOrder[a.tipo] - typeOrder[b.tipo];
-              }
-              return a.produtoNome.localeCompare(b.produtoNome);
-            });
-            sortChildren(item.children);
-          }
-        });
-      };
-      sortChildren(topLevelSummaryItems);
-
-      // Calculate status for all items, starting from the top
-      topLevelSummaryItems.forEach(item => calculateStatus(item, pedidos));
-
-      setProductionSummary(topLevelSummaryItems.filter(item => item.necessario > 0));
-      setIsSummaryLoading(false);
-    },
-    [getStockForProduct, setIsSummaryLoading, setProductionSummary, optimizedGroups] // Add optimizedGroups to dependencies
-  );
-
-  const refetchAllData = useCallback(async () => {
-    // The onSnapshot listeners handle real-time updates for all static data and production groups.
-    // For the 'visao_geral' tab, we need to explicitly trigger generateProductionSummary.
-    if (activeTab === 'visao_geral') {
-      generateProductionSummary(pedidos, {
-        pecas: availablePecas,
-        partes: availablePartes,
-        modelos: availableModels,
-        kits: availableKits,
-        insumos: allInsumos,
-        filamentGroups: availableFilamentGroups,
-        locaisProdutos: locaisProdutos,
-        locaisInsumos: locaisInsumos,
-        recipientes: recipientes,
-        assemblyGroups: assemblyGroups
-      }, optimizedGroups); // Pass optimizedGroups as the third argument
-    }
-    // Other tabs are updated via their respective onSnapshot listeners in the main useEffect.
-    // No need to call individual fetch functions here anymore.
-  }, [
-    activeTab,
-    pedidos,
-    availablePecas,
-    availablePartes,
-    availableModels,
-    availableKits,
-    allInsumos,
-    availableFilamentGroups,
-    locaisProdutos,
-    locaisInsumos,
-    recipientes,
-    assemblyGroups,
-    generateProductionSummary,
-    optimizedGroups, // Add optimizedGroups to dependencies
-  ]);
 
   const handleConcluirMontagemPeca = useCallback(async (assemblyGroup: GrupoMontagem) => {
     if (!auth.currentUser) {
@@ -1502,7 +1270,7 @@ export default function Producao() {
           <div className="space-y-6">
             {getFilteredDisplayGroups(pedidos).length > 0 ? (
               (getFilteredDisplayGroups(pedidos) as GrupoMontagem[]).map((assemblyGroup: GrupoMontagem) => {
-                const pedidoId: string = assemblyGroup.targetProductId; // The pedidoId is stored in targetProductId
+                const pedidoId: string = assemblyGroup.targetProductId ?? ''; // The pedidoId is stored in targetProductId
                 const canConcludePackaging = (assemblyGroup.produtosFinaisNecessarios ?? []).every(produto =>
                   (produto.quantidadeAtendida || 0) >= produto.quantidade
                 );

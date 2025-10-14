@@ -11,7 +11,8 @@ import {
     EntradaPecaMontagemPayload,
     LancamentoProducaoTipoEvento, // Import the enum
     LancamentoInsumo, // Import LancamentoInsumo
-    LancamentoServico // Import LancamentoServico
+    LancamentoServico, // Import LancamentoServico
+    Insumo // Import Insumo
 } from '../../types/productionTypes';
 
 export async function handleConclusaoProducao(event: { data?: DocumentSnapshot }) {
@@ -290,22 +291,41 @@ export async function handleConclusaoProducao(event: { data?: DocumentSnapshot }
                     const quantidadeInsumo = typeof insumo.quantidade === 'string' ? parseFloat(insumo.quantidade) : insumo.quantidade;
 
                     if (quantidadeInsumo > 0 && insumo.etapaInstalacao === 'impressao') {
+                        let locaisParaLancamento: { recipienteId: string; quantidade: number }[] = [];
+
+                        if (insumo.tipo === 'material') {
+                            const insumoDoc = await db.collection('insumos').doc(insumo.id!).get();
+                            const fetchedInsumo = insumoDoc.data() as Insumo | undefined;
+
+                            if (fetchedInsumo && fetchedInsumo.posicoesEstoque && fetchedInsumo.posicoesEstoque.length > 0) {
+                                locaisParaLancamento = fetchedInsumo.posicoesEstoque.map(pos => ({
+                                    recipienteId: pos.recipienteId!,
+                                    localId: pos.localId!, // Include localId
+                                    divisao: pos.divisao || null, // Include divisao, ensure it's null if undefined
+                                    quantidade: quantidadeInsumo, // Assign total quantity to each potential location
+                                }));
+                            } else {
+                                console.warn(`Insumo material ${insumo.id} not found or has no posicoesEstoque.`);
+                            }
+                        } else {
+                            locaisParaLancamento = (insumo.localEstoqueInsumo || []).map(local => ({
+                                recipienteId: local.recipienteId!,
+                                quantidade: local.quantidade,
+                            }));
+                        }
+
                         newLancamentosInsumos.push({
-                            // id: uuidv4(), // Removed uuidv4
-                            insumoId: insumo.id!, // Non-null assertion
-                            tipoInsumo: insumo.tipo, // Use the updated type which includes 'tempo'
+                            insumoId: insumo.id!,
+                            tipoInsumo: insumo.tipo,
                             tipoMovimento: 'saida',
-                            quantidade: quantidadeInsumo, // Use the parsed number
+                            quantidade: quantidadeInsumo,
                             unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades',
                             data: admin.firestore.Timestamp.now(),
                             detalhes: `Consumo para grupo de impressão otimizado: ${optimizedGroup.sourceName} (ID: ${optimizedGroup.id})`,
-                            locais: (insumo.localEstoqueInsumo || []).map(local => ({
-                                recipienteId: local.recipienteId!, // Non-null assertion
-                                quantidade: local.quantidade,
-                            })),
+                            locais: locaisParaLancamento, // Use the determined locaisParaLancamento
                             pedidoId: pedidoIdForContext,
-                            usuario: lancamento.usuarioId, // Use usuarioId from the main lancamento
-                            origem: 'producao', // Added origem field
+                            usuario: lancamento.usuarioId,
+                            origem: 'producao',
                         });
                     }
                 }

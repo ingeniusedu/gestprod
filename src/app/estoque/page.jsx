@@ -34,6 +34,7 @@ export default function Estoque() {
   const [highestSpoolNumber, setHighestSpoolNumber] = useState(0);
   const [activeTab, setActiveTab] = useState('insumos'); // Current active tab: insumos, kits, modelos, pecas, partes
   const [activeSummaryTab, setActiveSummaryTab] = useState('geral'); // Current active tab for stock summary: geral, filamento, embalagem, material
+  const [showFinalizedSpools, setShowFinalizedSpools] = useState(false); // New state for showing finalized spools
 
   useEffect(() => {
     return () => {};
@@ -164,6 +165,8 @@ export default function Estoque() {
                 ...insumoToSave.especificacoes,
                 numeroSpools: 1,
                 spoolNumero: assignedSpoolNumber,
+                isFinalizado: false, // Initialize isFinalizado to false
+                finalizadoEm: null, // Ensure finalizadoEm is null on creation
               },
               createdAt: new Date(),
             };
@@ -351,6 +354,11 @@ export default function Estoque() {
   const groupFilaments = (filaments) => {
     const grouped = {};
     filaments.forEach(spool => {
+      // Filter out finalized spools if showFinalizedSpools is false
+      if (!showFinalizedSpools && spool.especificacoes?.isFinalizado) {
+        return;
+      }
+
       // Create a more robust key for grouping: fabricante, material, and cor
       const key = `${spool.especificacoes?.fabricante || 'N/A'}-${spool.especificacoes?.material || 'N/A'}-${spool.cor || 'N/A'}`;
 
@@ -592,6 +600,22 @@ export default function Estoque() {
                   <option value="material">Materiais</option>
                   <option value="tempo">Tempo</option>
                 </select>
+              </div>
+            )}
+
+            {/* Toggle para Spools Finalizados (apenas para Insumos e tipo Filamento) */}
+            {activeTab === 'insumos' && (
+              <div className="flex items-center">
+                <input
+                  type="checkbox"
+                  id="showFinalizedSpoolsToggle"
+                  checked={showFinalizedSpools}
+                  onChange={(e) => setShowFinalizedSpools(e.target.checked)}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                />
+                <label htmlFor="showFinalizedSpoolsToggle" className="ml-2 block text-sm text-gray-900">
+                  Mostrar Spools Finalizados
+                </label>
               </div>
             )}
 

@@ -36,7 +36,8 @@ const defaultFilamentSpecs = {
   pesoBruto: 0,
   pesoLiquido: 0,
   dataUltimaPesagem: '',
-  finalizadoEm: false,
+  finalizadoEm: null, // Change from false to null
+  isFinalizado: false, // Add this field
   dataFinalizacao: '',
   lote: '',
   dataFabricacao: '',
@@ -144,8 +145,14 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
       } else {
         // When creating new, reset to initial state
         const newFormData = { ...initialFormState };
-        if (newFormData.tipo === 'filamento' && newFormData.especificacoes.autoNumberSpool) {
-          newFormData.especificacoes.spoolNumero = highestExistingSpoolNumber + 1; // Ensure it's a number
+        if (newFormData.tipo === 'filamento') {
+          if (newFormData.especificacoes.autoNumberSpool) {
+            newFormData.especificacoes.spoolNumero = highestExistingSpoolNumber + 1; // Ensure it's a number
+          }
+          // Set initial pesoBruto and pesoLiquido for new, closed spools
+          const tamanho = parseFloat(newFormData.especificacoes.tamanhoSpool) || 0;
+          newFormData.especificacoes.pesoBruto = tamanho > 0 ? tamanho + 124 : 0;
+          newFormData.especificacoes.pesoLiquido = tamanho;
         }
         setFormData(newFormData);
         setPosicoesEstoque([]); // Reset for new insumos
@@ -343,17 +350,25 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
         [name]: type === 'number' ? parseFloat(value) || 0 : (name === 'spoolNumero' ? (parseInt(value, 10) || 0) : (type === 'checkbox' ? checked : value)),
       };
 
-      // Handle pesoBruto and pesoLiquido calculation
-      if (name === 'pesoBruto' && newEspecificacoes.aberto) {
-        newEspecificacoes.pesoLiquido = (parseFloat(value) || 0) - 130; // Calculate net weight
-      } else if (name === 'aberto') {
-        if (checked) {
-          // When 'aberto' is checked, calculate pesoLiquido based on current pesoBruto
-          newEspecificacoes.pesoLiquido = (parseFloat(newEspecificacoes.pesoBruto) || 0) - 130;
-        } else {
-          // When 'aberto' is unchecked, reset pesoBruto and pesoLiquido
-          newEspecificacoes.pesoBruto = 0;
-          newEspecificacoes.pesoLiquido = 0;
+      // Handle pesoBruto and pesoLiquido calculation for filaments
+      if (formData.tipo === 'filamento') {
+        if (name === 'pesoBruto' && newEspecificacoes.aberto) {
+          newEspecificacoes.pesoLiquido = (parseFloat(value) || 0) - 124; // Calculate net weight
+        } else if (name === 'aberto') {
+          const tamanho = parseFloat(newEspecificacoes.tamanhoSpool) || 0;
+          if (checked) {
+            // When 'aberto' is checked, calculate pesoLiquido based on current pesoBruto
+            newEspecificacoes.pesoLiquido = (parseFloat(newEspecificacoes.pesoBruto) || 0) - 124;
+          } else {
+            // When 'aberto' is unchecked, reset pesoBruto and pesoLiquido based on tamanhoSpool
+            newEspecificacoes.pesoBruto = tamanho > 0 ? tamanho + 124 : 0;
+            newEspecificacoes.pesoLiquido = tamanho;
+          }
+        } else if (name === 'tamanhoSpool' && !newEspecificacoes.aberto) {
+          // If tamanhoSpool changes and spool is closed, update pesoBruto and pesoLiquido
+          const newTamanho = parseFloat(value) || 0;
+          newEspecificacoes.pesoBruto = newTamanho > 0 ? newTamanho + 124 : 0;
+          newEspecificacoes.pesoLiquido = newTamanho;
         }
       }
 
@@ -547,16 +562,48 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
               // Assign the determined grupoFilamentoId to the new insumo
               dataToSave.especificacoes.grupoFilamentoId = grupoFilamentoId;
 
-              insumoDocRef = doc(insumosRef);
-              insumoId = insumoDocRef.id;
-              transaction.set(insumoDocRef, {
-                ...dataToSave,
-                id: insumoId,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
+              const numberOfSpools = dataToSave.especificacoes.numeroSpools || 1;
+              const createdSpools = [];
+
+              for (let i = 0; i < numberOfSpools; i++) {
+                const insumoDocRef = doc(insumosRef);
+                const insumoId = insumoDocRef.id;
+
+                const currentSpoolNumber = dataToSave.especificacoes.autoNumberSpool
+                  ? highestExistingSpoolNumber + 1 + i
+                  : (dataToSave.especificacoes.spoolNumero || 0) + i;
+
+                const spoolDataToSave = {
+                  ...dataToSave,
+                  id: insumoId,
+                  estoqueAtual: parseFloat(dataToSave.especificacoes.tamanhoSpool) || 0, // Each spool starts with its full capacity
+                  especificacoes: {
+                    ...dataToSave.especificacoes,
+                    spoolNumero: currentSpoolNumber,
+                    // Reset pesoBruto and pesoLiquido for new spools if not explicitly set
+                    pesoBruto: (parseFloat(dataToSave.especificacoes.tamanhoSpool) || 0) + 124,
+                    pesoLiquido: parseFloat(dataToSave.especificacoes.tamanhoSpool) || 0,
+                    aberto: false, // New spools are initially closed
+                    dataAbertura: '',
+                    finalizadoEm: null, // Ensure this is null
+                    isFinalizado: false, // Ensure this is false
+                    dataFinalizacao: '',
+                    consumoProducao: 0,
+                    consumoReal: 0,
+                  },
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                };
+
+                // Remove numeroSpools from the specificacoes of the individual spool
+                delete spoolDataToSave.especificacoes.numeroSpools;
+
+                transaction.set(insumoDocRef, spoolDataToSave);
+                createdSpools.push(spoolDataToSave);
+              }
+              // Call onSave for each created spool
+              createdSpools.forEach(spool => onSave(spool));
             }
-            onSave({ ...dataToSave, id: insumoId });
           });
         } catch (error) {
           console.error("Error saving insumo:", error);
@@ -566,57 +613,56 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
         // Para não-filamentos, o estoque será gerenciado pelas posições de estoque
         dataToSave.estoqueAtual = totalPosicoes; // Update estoqueAtual based on sum of posicoesEstoque
         dataToSave.posicoesEstoque = posicoesEstoque; // Save the positions directly
-        // dataToSave.especificacoes.quantidade = totalPosicoes; // Removed as per user request
 
-      // Clean the object to remove any undefined values before sending to Firebase
-      // Conditionally clean specificacoes based on insumo type
-      if (dataToSave.especificacoes) {
-        if (dataToSave.tipo === 'filamento') {
-          const {
-            fabricante, tipoFilamento, material, numeroSpools, tamanhoSpool,
-            valorPagoPorSpool, spoolNumero, autoNumberSpool, aberto, dataAbertura,
-            pesoBruto, pesoLiquido, dataUltimaPesagem, finalizadoEm, dataFinalizacao,
-            lote, dataFabricacao, dataCompra, operacoes, consumoProducao, consumoReal,
-            grupoFilamentoId // Keep this as it's set in the filament logic
-          } = dataToSave.especificacoes;
-          dataToSave.especificacoes = cleanObject({
-            fabricante, tipoFilamento, material, numeroSpools, tamanhoSpool,
-            valorPagoPorSpool, spoolNumero, autoNumberSpool, aberto, dataAbertura,
-            pesoBruto, pesoLiquido, dataUltimaPesagem, finalizadoEm, dataFinalizacao,
-            lote, dataFabricacao, dataCompra, operacoes, consumoProducao, consumoReal,
-            grupoFilamentoId
-          });
-        } else if (dataToSave.tipo === 'embalagem') {
-          const {
-            tipoEmbalagem, materialEmbalagem, altura, largura, profundidade,
-            valorTotalPago, valorFrete, dataCompraEmbalagem
-          } = dataToSave.especificacoes;
-          dataToSave.especificacoes = cleanObject({
-            tipoEmbalagem, materialEmbalagem, altura, largura, profundidade,
-            valorTotalPago, valorFrete, dataCompraEmbalagem
-          });
-        } else if (dataToSave.tipo === 'material') {
-          const {
-            tipoMaterial, materialAssociado, usarMedidas, altura, largura, profundidade,
-            valorTotalPago, valorFrete, dataCompraMaterial
-          } = dataToSave.especificacoes;
-          dataToSave.especificacoes = cleanObject({
-            tipoMaterial, materialAssociado, usarMedidas, altura, largura, profundidade,
-            valorTotalPago, valorFrete, dataCompraMaterial
-          });
-        } else {
-          // For 'tempo' and 'outros' types, clear all specificacoes
-          dataToSave.especificacoes = {};
+        // Clean the object to remove any undefined values before sending to Firebase
+        // Conditionally clean specificacoes based on insumo type
+        if (dataToSave.especificacoes) {
+          if (dataToSave.tipo === 'filamento') {
+            const {
+              fabricante, tipoFilamento, material, numeroSpools, tamanhoSpool,
+              valorPagoPorSpool, spoolNumero, autoNumberSpool, aberto, dataAbertura,
+              pesoBruto, pesoLiquido, dataUltimaPesagem, finalizadoEm, dataFinalizacao,
+              lote, dataFabricacao, dataCompra, operacoes, consumoProducao, consumoReal,
+              grupoFilamentoId // Keep this as it's set in the filament logic
+            } = dataToSave.especificacoes;
+            dataToSave.especificacoes = cleanObject({
+              fabricante, tipoFilamento, material, numeroSpools, tamanhoSpool,
+              valorPagoPorSpool, spoolNumero, autoNumberSpool, aberto, dataAbertura,
+              pesoBruto, pesoLiquido, dataUltimaPesagem, finalizadoEm, dataFinalizacao,
+              lote, dataFabricacao, dataCompra, operacoes, consumoProducao, consumoReal,
+              grupoFilamentoId
+            });
+          } else if (dataToSave.tipo === 'embalagem') {
+            const {
+              tipoEmbalagem, materialEmbalagem, altura, largura, profundidade,
+              valorTotalPago, valorFrete, dataCompraEmbalagem
+            } = dataToSave.especificacoes;
+            dataToSave.especificacoes = cleanObject({
+              tipoEmbalagem, materialEmbalagem, altura, largura, profundidade,
+              valorTotalPago, valorFrete, dataCompraEmbalagem
+            });
+          } else if (dataToSave.tipo === 'material') {
+            const {
+              tipoMaterial, materialAssociado, usarMedidas, altura, largura, profundidade,
+              valorTotalPago, valorFrete, dataCompraMaterial
+            } = dataToSave.especificacoes;
+            dataToSave.especificacoes = cleanObject({
+              tipoMaterial, materialAssociado, usarMedidas, altura, largura, profundidade,
+              valorTotalPago, valorFrete, dataCompraMaterial
+            });
+          } else {
+            // For 'tempo' and 'outros' types, clear all specificacoes
+            dataToSave.especificacoes = {};
+          }
         }
-      }
 
-      dataToSave = cleanObject(dataToSave);
+        dataToSave = cleanObject(dataToSave);
 
-      try {
-        await runTransaction(db, async (transaction) => {
-          const insumosRef = collection(db, 'insumos');
-          let insumoDocRef;
-          let insumoId;
+        try {
+          await runTransaction(db, async (transaction) => {
+            const insumosRef = collection(db, 'insumos');
+            let insumoDocRef;
+            let insumoId;
 
             if (initialData?.id) {
               insumoDocRef = doc(insumosRef, initialData.id);
@@ -1043,57 +1089,58 @@ export default function InsumoFormModal({ isOpen, onClose, onSave, initialData, 
                   </label>
                 </div>
                 {formData.especificacoes.aberto && (
-                  <>
-                    <div>
-                      <label htmlFor="dataAbertura" className="block text-sm font-medium text-gray-700">Data de Abertura</label>
-                      <input
-                        type="date"
-                        name="dataAbertura"
-                        id="dataAbertura"
-                        value={formData.especificacoes.dataAbertura || ''}
-                        onChange={handleEspecificacoesChange}
-                        className={`mt-1 block w-full border ${errors.dataAbertura ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
-                      />
-                      {errors.dataAbertura && <p className="mt-1 text-sm text-red-600">{errors.dataAbertura}</p>}
-                    </div>
-                    <div>
-                      <label htmlFor="pesoBruto" className="block text-sm font-medium text-gray-700">Peso Bruto (g)</label>
-                      <input
-                        type="number"
-                        name="pesoBruto"
-                        id="pesoBruto"
-                        value={formData.especificacoes.pesoBruto || 0}
-                        onChange={handleEspecificacoesChange}
-                        min="0"
-                        step="0.01"
-                        className={`mt-1 block w-full border ${errors.pesoBruto ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
-                      />
-                      {errors.pesoBruto && <p className="mt-1 text-sm text-red-600">{errors.pesoBruto}</p>}
-                    </div>
-                    <div>
-                      <label htmlFor="pesoLiquido" className="block text-sm font-medium text-gray-700">Peso Líquido (g)</label>
-                      <input
-                        type="number"
-                        name="pesoLiquido"
-                        id="pesoLiquido"
-                        value={formData.especificacoes.pesoLiquido || 0}
-                        readOnly
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 bg-gray-100 cursor-not-allowed"
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="dataUltimaPesagem" className="block text-sm font-medium text-gray-700">Data da Última Pesagem</label>
-                      <input
-                        type="date"
-                        name="dataUltimaPesagem"
-                        id="dataUltimaPesagem"
-                        value={formData.especificacoes.dataUltimaPesagem || ''}
-                        onChange={handleEspecificacoesChange}
-                        className={`mt-1 block w-full border ${errors.dataUltimaPesagem ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
-                      />
-                      {errors.dataUltimaPesagem && <p className="mt-1 text-sm text-red-600">{errors.dataUltimaPesagem}</p>}
-                    </div>
-                  </>
+                  <div>
+                    <label htmlFor="dataAbertura" className="block text-sm font-medium text-gray-700">Data de Abertura</label>
+                    <input
+                      type="date"
+                      name="dataAbertura"
+                      id="dataAbertura"
+                      value={formData.especificacoes.dataAbertura || ''}
+                      onChange={handleEspecificacoesChange}
+                      className={`mt-1 block w-full border ${errors.dataAbertura ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                    />
+                    {errors.dataAbertura && <p className="mt-1 text-sm text-red-600">{errors.dataAbertura}</p>}
+                  </div>
+                )}
+                <div>
+                  <label htmlFor="pesoBruto" className="block text-sm font-medium text-gray-700">Peso Bruto (g)</label>
+                  <input
+                    type="number"
+                    name="pesoBruto"
+                    id="pesoBruto"
+                    value={formData.especificacoes.pesoBruto || 0}
+                    onChange={handleEspecificacoesChange}
+                    min="0"
+                    step="0.01"
+                    readOnly={!formData.especificacoes.aberto}
+                    className={`mt-1 block w-full border ${errors.pesoBruto ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 ${!formData.especificacoes.aberto ? 'bg-gray-100 cursor-not-allowed' : ''} focus:ring-blue-500 focus:border-blue-500`}
+                  />
+                  {errors.pesoBruto && <p className="mt-1 text-sm text-red-600">{errors.pesoBruto}</p>}
+                </div>
+                <div>
+                  <label htmlFor="pesoLiquido" className="block text-sm font-medium text-gray-700">Peso Líquido (g)</label>
+                  <input
+                    type="number"
+                    name="pesoLiquido"
+                    id="pesoLiquido"
+                    value={formData.especificacoes.pesoLiquido || 0}
+                    readOnly
+                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 bg-gray-100 cursor-not-allowed"
+                  />
+                </div>
+                {formData.especificacoes.aberto && (
+                  <div>
+                    <label htmlFor="dataUltimaPesagem" className="block text-sm font-medium text-gray-700">Data da Última Pesagem</label>
+                    <input
+                      type="date"
+                      name="dataUltimaPesagem"
+                      id="dataUltimaPesagem"
+                      value={formData.especificacoes.dataUltimaPesagem || ''}
+                      onChange={handleEspecificacoesChange}
+                      className={`mt-1 block w-full border ${errors.dataUltimaPesagem ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500`}
+                    />
+                    {errors.dataUltimaPesagem && <p className="mt-1 text-sm text-red-600">{errors.dataUltimaPesagem}</p>}
+                  </div>
                 )}
               </div>
 

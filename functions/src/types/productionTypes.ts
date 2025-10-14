@@ -563,6 +563,14 @@ export interface LancamentoInsumo {
     usuario?: string; // Added usuario
 }
 
+export interface Insumo {
+    id: string;
+    nome: string;
+    tipo: 'filamento' | 'material' | 'outros' | 'embalagem' | 'tempo';
+    posicoesEstoque: PosicaoEstoque[];
+    // Add other relevant fields if necessary, based on how insumo documents are structured in Firestore
+}
+
 export interface LancamentoServico {
     servicoId: 'impressao_3d' | 'embalagem';
     optimizedGroupId?: string;

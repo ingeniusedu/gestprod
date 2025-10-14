@@ -455,6 +455,7 @@ export interface FilamentSpool {
   aberto: boolean;
   dataAbertura?: Timestamp;
   finalizadoEm?: Timestamp;
+  isFinalizado: boolean;
   operacoes: string[]; // Array of lancamentoIds
   createdAt: Timestamp;
   updatedAt: Timestamp;

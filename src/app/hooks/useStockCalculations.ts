@@ -76,7 +76,7 @@ export const useStockCalculations = () => {
           const insumo = allInsumosData.find(i => i.id === productId);
           if (insumo) {
             posicoesEstoque = enrichPosicoesEstoque(insumo.posicoesEstoque || [], 'insumo', allLocaisProdutosData, allLocaisInsumosData, allRecipientesData);
-            estoqueTotal = (insumo as any).estoqueAtual ?? insumo.estoqueTotal ?? calculateStockFromPositions(posicoesEstoque);
+            estoqueTotal = insumo.estoqueTotal ?? calculateStockFromPositions(posicoesEstoque);
           }
         }
       } else if (productType === 'peca') {

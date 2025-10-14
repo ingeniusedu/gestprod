@@ -64,6 +64,7 @@ export async function processLancamentoInsumoUtil(event: any) {
                         aberto: data.especificacoes?.aberto || false,
                         dataAbertura: data.especificacoes?.dataAbertura === "" ? null : (data.especificacoes?.dataAbertura instanceof admin.firestore.Timestamp ? data.especificacoes.dataAbertura : null),
                         finalizadoEm: data.especificacoes?.finalizadoEm === false ? null : (data.especificacoes?.finalizadoEm instanceof admin.firestore.Timestamp ? data.especificacoes.finalizadoEm : null),
+                        isFinalizado: data.especificacoes?.isFinalizado || false, // Default to false if not present
                         operacoes: data.operacoes || [],
                         createdAt: data.createdAt instanceof admin.firestore.Timestamp ? data.createdAt : admin.firestore.Timestamp.now(),
                         updatedAt: data.updatedAt instanceof admin.firestore.Timestamp ? data.updatedAt : admin.firestore.Timestamp.now(),
@@ -76,7 +77,7 @@ export async function processLancamentoInsumoUtil(event: any) {
 
                 functions.logger.debug(`[${lancamentoId}] Initial spools found: ${spools.length}. Details:`, spools.map(s => ({ id: s.id, spoolNumero: s.spoolNumero, aberto: s.aberto, estoqueAtual: s.estoqueAtual, finalizadoEm: s.finalizadoEm ? 'true' : 'false' })));
 
-                const spoolsToUpdate: { spool: FilamentSpool; newEstoque: number; aberto: boolean; debitedAmount: number; dataAbertura?: FieldValue | null; finalizadoEm?: FieldValue | null }[] = [];
+                const spoolsToUpdate: { spool: FilamentSpool; newEstoque: number; aberto: boolean; debitedAmount: number; dataAbertura?: FieldValue | null; finalizadoEm?: FieldValue | null; isFinalizado?: boolean }[] = [];
                 const notificacoes: NotificacaoFrontend[] = [];
 
                 let currentSpool: FilamentSpool | undefined;
@@ -134,35 +135,35 @@ export async function processLancamentoInsumoUtil(event: any) {
                     const updateEntry = spoolsToUpdate.find(entry => entry.spool.id === currentSpool!.id);
                     if (updateEntry) {
                         updateEntry.newEstoque = newEstoque;
-                        updateEntry.aberto = newEstoque > 0;
+                        updateEntry.aberto = true; // Ensure 'aberto' is present and true for an open spool
                         updateEntry.debitedAmount += consumable; // Accumulate debited amount
                         if (newEstoque <= 0) {
                             updateEntry.finalizadoEm = FieldValue.serverTimestamp();
                         }
                     } else {
                         spoolsToUpdate.push({
-                            spool: currentSpool,
-                            newEstoque: newEstoque,
-                            aberto: newEstoque > 0,
-                            debitedAmount: consumable, // Initial debited amount
-                            finalizadoEm: newEstoque <= 0 ? FieldValue.serverTimestamp() : null,
-                        });
+                                spool: currentSpool,
+                                newEstoque: newEstoque,
+                                aberto: true, // Ensure 'aberto' is present and true for an open spool
+                                debitedAmount: consumable, // Initial debited amount
+                                finalizadoEm: newEstoque <= 0 ? FieldValue.serverTimestamp() : null,
+                                isFinalizado: newEstoque <= 0 ? true : false, // Set isFinalizado based on newEstoque
+                            });
                     }
 
                     // If the current spool is now empty, mark it as closed and clear it for the next iteration
                     if (newEstoque <= 0) {
-                        currentSpool.aberto = false;
                         currentSpool.finalizadoEm = FieldValue.serverTimestamp() as any;
+                        currentSpool.isFinalizado = true; // Set isFinalizado to true
                         functions.logger.debug(`[${lancamentoId}] Spool ${currentSpool?.id} is now empty and closed.`);
                         currentSpool = undefined; // Force finding a new spool in next iteration
                     }
                 }
 
                 // Apply updates within the transaction
-                for (const { spool, newEstoque, aberto, debitedAmount, dataAbertura, finalizadoEm } of spoolsToUpdate) {
+                for (const { spool, newEstoque, debitedAmount, dataAbertura, finalizadoEm, isFinalizado } of spoolsToUpdate) {
                     const updateData: any = {
                         "estoqueAtual": newEstoque, // Corrected: update top-level estoqueAtual
-                        "especificacoes.aberto": aberto,
                         "especificacoes.pesoBruto": FieldValue.increment(-debitedAmount), // Debit pesoBruto
                         "especificacoes.pesoLiquido": FieldValue.increment(-debitedAmount), // Debit pesoLiquido
                         operacoes: FieldValue.arrayUnion(lancamentoId),
@@ -178,9 +179,13 @@ export async function processLancamentoInsumoUtil(event: any) {
 
                     if (dataAbertura) {
                         updateData["especificacoes.dataAbertura"] = dataAbertura;
+                        updateData["especificacoes.aberto"] = true; // Only set aberto to true when opening
                     }
                     if (finalizadoEm) {
                         updateData["especificacoes.finalizadoEm"] = finalizadoEm;
+                        updateData["especificacoes.isFinalizado"] = true; // Set isFinalizado to true when finalizadoEm is set
+                    } else if (isFinalizado !== undefined) {
+                        updateData["especificacoes.isFinalizado"] = isFinalizado;
                     }
                     transaction.update(db.collection("insumos").doc(spool.id), updateData);
                 }
