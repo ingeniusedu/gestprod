@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Package, CheckCircle, XCircle, Box, Component, Puzzle, ArrowRightCircle, ChevronUp, ChevronDown } from 'lucide-react';
+import { Package, CheckCircle, XCircle, Box, Component, Puzzle, ArrowRightCircle, ChevronUp, ChevronDown, ShoppingBag } from 'lucide-react';
 
 import { SummaryItem } from '../types'; // Import from types/index.ts
 
@@ -23,46 +23,54 @@ const ProductionSummaryTable: React.FC<ProductionSummaryTableProps> = ({ summary
     const isExpanded = expandedRows[item.documentId];
     const hasChildren = item.children && item.children.length > 0;
     const indentation = (item.level || 0) * 20; // 20px per level
+    const isPedidoHeader = item.sku.startsWith('PED-');
 
     return (
       <React.Fragment key={item.documentId}>
-        <tr className="hover:bg-gray-50">
+        <tr className={`hover:bg-gray-50 ${isPedidoHeader ? 'bg-blue-50' : ''}`}>
           <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-500" style={{ paddingLeft: `${indentation + 24}px` }}>
             {hasChildren && (
               <button onClick={() => toggleRow(item.documentId)} className="mr-2 focus:outline-none">
                 {isExpanded ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
               </button>
             )}
+            {isPedidoHeader && <ShoppingBag className="inline h-4 w-4 mr-2 text-blue-500" />}
             {item.sku}
           </td>
           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
             {item.produtoNome}
           </td>
           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 capitalize">
-            {item.tipo === 'kit' && <Package className="h-5 w-5 text-gray-500" />}
-            {item.tipo === 'modelo' && <Box className="h-5 w-5 text-gray-500" />}
-            {item.tipo === 'peca' && <Component className="h-5 w-5 text-gray-500" />}
-            {item.tipo === 'parte' && <Puzzle className="h-5 w-5 text-gray-500" />}
+            {isPedidoHeader ? <ShoppingBag className="h-5 w-5 text-blue-500" /> : (
+              <>
+                {item.tipo === 'kit' && <Package className="h-5 w-5 text-gray-500" />}
+                {item.tipo === 'modelo' && <Box className="h-5 w-5 text-gray-500" />}
+                {item.tipo === 'peca' && <Component className="h-5 w-5 text-gray-500" />}
+                {item.tipo === 'parte' && <Puzzle className="h-5 w-5 text-gray-500" />}
+              </>
+            )}
           </td>
           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.necessario}</td>
           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
             <div className="flex items-center">
               {item.emEstoque}
-              <button
-                onClick={() => onUseStock(item)}
-                className="ml-2 p-1 rounded-full hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                title="Usar Estoque"
-              >
-                <ArrowRightCircle
-                  className={`h-5 w-5 ${
-                    item.emEstoque >= item.necessario && item.necessario > 0
-                      ? 'text-green-500'
-                      : item.emEstoque > 0 && item.emEstoque < item.necessario
-                      ? 'text-yellow-500'
-                      : 'text-gray-400'
-                  }`}
-                />
-              </button>
+              {!isPedidoHeader && (
+                <button
+                  onClick={() => onUseStock(item)}
+                  className="ml-2 p-1 rounded-full hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  title="Usar Estoque"
+                >
+                  <ArrowRightCircle
+                    className={`h-5 w-5 ${
+                      item.emEstoque >= item.necessario && item.necessario > 0
+                        ? 'text-green-500'
+                        : item.emEstoque > 0 && item.emEstoque < item.necessario
+                        ? 'text-yellow-500'
+                        : 'text-gray-400'
+                    }`}
+                  />
+                </button>
+              )}
             </div>
           </td>
           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.aguardando}</td>
@@ -84,7 +92,7 @@ const ProductionSummaryTable: React.FC<ProductionSummaryTableProps> = ({ summary
 
   return (
     <div className="bg-white shadow rounded-lg p-6 mb-6">
-      <h2 className="text-xl font-bold text-gray-900 mb-4">Resumo da Lista de Produção</h2>
+      <h2 className="text-xl font-bold text-gray-900 mb-4">Resumo da Lista de Produção por Pedido</h2>
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">

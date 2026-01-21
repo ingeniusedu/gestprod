@@ -6,9 +6,9 @@ import { db } from '../services/firebase';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 const ServiceCostModal = ({ isOpen, onClose }) => {
-  const [custoPorMinutoImpressao, setCustoPorMinutoImpressao] = useState('');
-  const [custoPorMinutoMontagem, setCustoPorMinutoMontagem] = useState('');
-  const [custoPorGramaFilamento, setCustoPorGramaFilamento] = useState(''); // New state for filament cost
+  const [costPerMinute3DPrint, setCostPerMinute3DPrint] = useState('');
+  const [costPerMinuteAssembly, setCostPerMinuteAssembly] = useState('');
+  const [costPerMinutePackaging, setCostPerMinutePackaging] = useState('');
 
   useEffect(() => {
     const fetchServiceCosts = async () => {
@@ -17,9 +17,9 @@ const ServiceCostModal = ({ isOpen, onClose }) => {
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
           const data = docSnap.data();
-          setCustoPorMinutoImpressao(data.custoPorMinutoImpressao || '');
-          setCustoPorMinutoMontagem(data.custoPorMinutoMontagem || '');
-          setCustoPorGramaFilamento(data.custoPorGramaFilamento || ''); // Set new state
+          setCostPerMinute3DPrint(data.costPerMinute3DPrint || '');
+          setCostPerMinuteAssembly(data.costPerMinuteAssembly || '');
+          setCostPerMinutePackaging(data.costPerMinutePackaging || '');
         }
       } catch (error) {
         console.error("Error fetching service costs: ", error);
@@ -36,9 +36,9 @@ const ServiceCostModal = ({ isOpen, onClose }) => {
     try {
       const docRef = doc(db, 'settings', 'serviceCosts');
       await setDoc(docRef, {
-        custoPorMinutoImpressao: parseFloat(custoPorMinutoImpressao) || 0,
-        custoPorMinutoMontagem: parseFloat(custoPorMinutoMontagem) || 0,
-        custoPorGramaFilamento: parseFloat(custoPorGramaFilamento) || 0, // Save new cost
+        costPerMinute3DPrint: parseFloat(costPerMinute3DPrint) || 0,
+        costPerMinuteAssembly: parseFloat(costPerMinuteAssembly) || 0,
+        costPerMinutePackaging: parseFloat(costPerMinutePackaging) || 0,
       }, { merge: true });
       onClose();
     } catch (error) {
@@ -66,47 +66,47 @@ const ServiceCostModal = ({ isOpen, onClose }) => {
 
         <form onSubmit={handleSave} className="mt-6 space-y-6">
           <div>
-            <label htmlFor="custoImpressao" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="costPerMinute3DPrint" className="block text-sm font-medium text-gray-700">
               Custo por Minuto de Impressão (R$)
             </label>
             <input
               type="number"
-              id="custoImpressao"
-              name="custoImpressao"
-              value={custoPorMinutoImpressao}
-              onChange={(e) => setCustoPorMinutoImpressao(e.target.value)}
+              id="costPerMinute3DPrint"
+              name="costPerMinute3DPrint"
+              value={costPerMinute3DPrint}
+              onChange={(e) => setCostPerMinute3DPrint(e.target.value)}
               className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               step="0.01"
               required
             />
           </div>
           <div>
-            <label htmlFor="custoMontagem" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="costPerMinuteAssembly" className="block text-sm font-medium text-gray-700">
               Custo por Minuto de Montagem (R$)
             </label>
             <input
               type="number"
-              id="custoMontagem"
-              name="custoMontagem"
-              value={custoPorMinutoMontagem}
-              onChange={(e) => setCustoPorMinutoMontagem(e.target.value)}
+              id="costPerMinuteAssembly"
+              name="costPerMinuteAssembly"
+              value={costPerMinuteAssembly}
+              onChange={(e) => setCostPerMinuteAssembly(e.target.value)}
               className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               step="0.01"
               required
             />
           </div>
           <div>
-            <label htmlFor="custoFilamento" className="block text-sm font-medium text-gray-700">
-              Custo por Grama de Filamento (R$)
+            <label htmlFor="costPerMinutePackaging" className="block text-sm font-medium text-gray-700">
+              Custo por Minuto de Embalagem (R$)
             </label>
             <input
               type="number"
-              id="custoFilamento"
-              name="custoFilamento"
-              value={custoPorGramaFilamento}
-              onChange={(e) => setCustoPorGramaFilamento(e.target.value)}
+              id="costPerMinutePackaging"
+              name="costPerMinutePackaging"
+              value={costPerMinutePackaging}
+              onChange={(e) => setCostPerMinutePackaging(e.target.value)}
               className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              step="0.001" // Allow for smaller increments for cost per gram
+              step="0.01"
               required
             />
           </div>

@@ -66,10 +66,21 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
       ]);
 
       setModelos(modelosSnapshot.docs.map(doc => {
-        const data = doc.data();
+        const data = doc.data() as any;
         const posicoes = data.posicoesEstoque || [];
         const estoqueTotal = posicoes.reduce((acc: number, pos: PosicaoEstoque) => acc + pos.quantidade, 0);
-        return { id: doc.id, ...data, estoqueTotal } as Modelo;
+        const custoDetalhado = data.custoDetalhado || {};
+        
+        return { 
+          id: doc.id, 
+          ...data, 
+          estoqueTotal,
+          custoCalculado: data.custoCalculado || 0,
+          custoCalculadoFilamento: custoDetalhado.filamento || 0,
+          custoCalculadoImpressao: custoDetalhado.impressao3D || 0,
+          custoCalculadoMontagem: custoDetalhado.montagem || 0,
+          custoCalculadoInsumos: custoDetalhado.insumos || 0,
+        } as Modelo;
       }));
       setPecas(pecasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Peca[]);
       setInsumos(insumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Insumo[]);
@@ -292,7 +303,15 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
           <div><strong>Impressão:</strong> {totalTempoImpressao} min</div>
           <div><strong>Filamento:</strong> {totalFilamentQuantity.toFixed(2)} g</div>
           <div><strong>Montagem:</strong> {tempoMontagem} min</div>
-          <div><strong>Custo:</strong> R$ {(custoCalculado || 0).toFixed(2)}</div>
+          <div className="space-y-1">
+            <div><strong>Custo Total:</strong> R$ {(custoCalculado || 0).toFixed(2)}</div>
+            <div className="text-xs text-gray-500 pl-2">
+              <div>• Filamento: R$ {(modelo.custoCalculadoFilamento || 0).toFixed(2)}</div>
+              <div>• Impressão: R$ {(modelo.custoCalculadoImpressao || 0).toFixed(2)}</div>
+              <div>• Montagem: R$ {(modelo.custoCalculadoMontagem || 0).toFixed(2)}</div>
+              <div>• Insumos: R$ {(modelo.custoCalculadoInsumos || 0).toFixed(2)}</div>
+            </div>
+          </div>
         </div>
         <div className="flex justify-end mt-4">
           <button
@@ -376,7 +395,15 @@ export default function ModelosPage({ isOnlyButton = false, searchTerm: propSear
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{totalTempoImpressao} min</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{totalFilamentQuantity.toFixed(2)} g</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{tempoMontagem} min</td>
-        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {(custoCalculado || 0).toFixed(2)}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+          <div>R$ {(custoCalculado || 0).toFixed(2)}</div>
+          <div className="text-xs text-gray-400">
+            <div>F: R$ {(modelo.custoCalculadoFilamento || 0).toFixed(2)}</div>
+            <div>I: R$ {(modelo.custoCalculadoImpressao || 0).toFixed(2)}</div>
+            <div>M: R$ {(modelo.custoCalculadoMontagem || 0).toFixed(2)}</div>
+            <div>O: R$ {(modelo.custoCalculadoInsumos || 0).toFixed(2)}</div>
+          </div>
+        </td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{estoqueTotal || 0}</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getLocalString(posicoesEstoque)}</td>
         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">

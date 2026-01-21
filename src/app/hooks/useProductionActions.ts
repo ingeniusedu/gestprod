@@ -150,12 +150,15 @@ export const useProductionActions = () => {
       if (group.tempoImpressaoGrupo > 0) {
         const lancamentoServicoRef = doc(collection(db, 'lancamentosServicos'));
         batch.set(lancamentoServicoRef, cleanObject({
-          servicoId: 'impressao_3d',
-          optimizedGroupId: group.id,
-          quantidade: group.tempoImpressaoGrupo / 60,
-          data: Timestamp.now(),
+          serviceType: 'impressao_3d',
+          origem: 'pedido',
           usuario: auth.currentUser?.displayName || 'Sistema',
-          pedidoId: group.pedidosOrigem[0]?.pedidoId,
+          data: Timestamp.now(),
+          payload: {
+            total: group.tempoImpressaoGrupo,
+            pedidoId: group.pedidosOrigem[0]?.pedidoId,
+            optimizedGroupId: group.id
+          }
         } as LancamentoServico));
       }
 
@@ -329,13 +332,16 @@ export const useProductionActions = () => {
     }
 
     try {
-      await addDoc(collection(db, 'lancamentoServicos'), cleanObject({
-        servicoId: 'embalagem',
-        pedidoId: pedidoId,
-        quantidade: time / 60,
-        data: Timestamp.now(),
+      await addDoc(collection(db, 'lancamentosServicos'), cleanObject({
+        serviceType: 'embalagem',
+        origem: 'pedido',
         usuario: auth.currentUser?.displayName || 'Sistema',
-      }));
+        data: Timestamp.now(),
+        payload: {
+          total: time,
+          pedidoId: pedidoId
+        }
+      } as LancamentoServico));
       toast.success("Tempo de embalagem lançado com sucesso!");
     } catch (error) {
       console.error("Erro ao lançar tempo de embalagem:", error);

@@ -15,6 +15,23 @@ export interface ConclusaoMontagemPecaPayload {
     usuarioId: string;
 }
 
+export interface ConclusaoPedidoPayload {
+    pedidoId: string;
+    pedidoNumero?: string;
+    assemblyGroupId: string;
+    produtoId?: string;
+    produtoNome?: string;
+    quantidade?: number;
+    usuarioId: string;
+    tempoEmbalagem: number; // tempo em minutos
+    embalagemId?: string; // ID do grupo/local de embalagem
+    insumosEmbalagem: {
+        insumoId: string;
+        quantidade: number;
+    }[];
+    itensConferidos?: Record<string, boolean>;
+}
+
 export enum LancamentoProducaoTipoEvento {
     CRIACAO_PEDIDO = 'criacao_pedido',
     INICIO_PRODUCAO = 'inicio_producao',
@@ -40,6 +57,9 @@ export enum LancamentoProducaoTipoEvento {
     ENTRADA_MODELO_EMBALAGEM = 'entrada_modelo_embalagem',
     ENTRADA_ESTOQUE_MODELO = 'entrada_estoque_modelo', // New case
     ENTRADA_PEDIDO_MODELO = 'entrada_pedido_modelo', // New case
+    CONCLUSAO_PEDIDO = 'conclusao_pedido', // NEW: Centralized conclusion
+    USO_ESTOQUE = 'uso_estoque', // NEW: Uso de estoque durante produção
+    ESTOQUE_EXCEDENTE = 'estoque_excedente', // NEW: Lançamento de excedente em estoque
 }
 
 export interface ConclusaoMontagemKitPayload {
@@ -98,7 +118,7 @@ export interface LancamentoProducao {
     tipoEvento: LancamentoProducaoTipoEvento;
     timestamp: admin.firestore.Timestamp | admin.firestore.FieldValue;
     usuarioId: string;
-    payload: CriacaoPedidoPayload | InicioProducaoPayload | ConclusaoProducaoPayload | EntradaPartesPayload | EntradaPecaEmbalagemPayload | EntradaPecaMontagemPayload | EntradaModeloMontagemPayload | EntradaKitMontagemPayload | ConclusaoMontagemPecaPayload | ConclusaoMontagemModeloPayload | ConclusaoMontagemKitPayload | EntradaPecaMontagemKitPayload | EntradaKitEmbalagemPayload | EntradaModeloMontagemKitPayload | EntradaEstoquePecaPayload | EntradaPedidoPecaPayload | EntradaEstoqueModeloPayload | EntradaPedidoModeloPayload | EntradaEstoqueKitPayload | EntradaPedidoKitPayload;
+    payload: CriacaoPedidoPayload | InicioProducaoPayload | ConclusaoProducaoPayload | EntradaPartesPayload | EntradaPecaEmbalagemPayload | EntradaPecaMontagemPayload | EntradaModeloMontagemPayload | EntradaKitMontagemPayload | ConclusaoMontagemPecaPayload | ConclusaoMontagemModeloPayload | ConclusaoMontagemKitPayload | EntradaPecaMontagemKitPayload | EntradaKitEmbalagemPayload | EntradaModeloMontagemKitPayload | EntradaEstoquePecaPayload | EntradaPedidoPecaPayload | EntradaEstoqueModeloPayload | EntradaPedidoModeloPayload | EntradaEstoqueKitPayload | EntradaPedidoKitPayload | ConclusaoPedidoPayload | UsoEstoquePayload | EstoqueExcedentePayload;
 }
 
 export interface CriacaoPedidoPayload {
@@ -208,6 +228,64 @@ export interface EntradaPedidoKitPayload {
     assemblyInstanceId: string;
 }
 
+export interface UsoEstoquePayload {
+    pedidoId: string;
+    // Informações do nível usado
+    nivelUsado: number;
+    produtoRaiz: {
+        id: string;
+        tipo: 'kit' | 'modelo' | 'peca' | 'parte';
+        quantidade: number;
+        // Contexto adicional para determinar próximo evento
+        parentModeloId?: string;
+        parentKitId?: string;
+        assemblyInstanceId?: string;
+    };
+    // Produtos consumidos (pode ser o raiz ou seus componentes)
+    produtosConsumidos: Array<{
+        produtoId: string;
+        produtoTipo: 'kit' | 'modelo' | 'peca' | 'parte';
+        quantidade: number;
+        nivel: number;
+        // Contexto para eventos downstream
+        parentModeloId?: string;
+        parentKitId?: string;
+        assemblyInstanceId?: string;
+    }>;
+    // Posições de estoque específicas
+    posicoesConsumidas: Array<{
+        produtoId: string;
+        produtoTipo: 'kit' | 'modelo' | 'peca' | 'parte';
+        posicaoEstoqueId: string;
+        quantidade: number;
+    }>;
+    // NOVOS CAMPOS: Grupos afetados mapeados pelo frontend
+    gruposMontagemAfetados?: Array<{
+        grupoMontagemId: string;
+        assemblyInstanceId: string;
+        modificacoes: Array<{
+            campo: string;
+            valor: any;
+        }>;
+    }>;
+    gruposProducaoAfetados?: Array<{
+        grupoProducaoId: string;
+        assemblyInstances: string[];
+        modificacoes: Record<string, any>;
+    }>;
+    timestamp?: string;
+}
+
+export interface EstoqueExcedentePayload {
+    produtoId: string;
+    produtoTipo: 'parte' | 'peca' | 'modelo' | 'kit';
+    quantidade: number;
+    localId: string;
+    recipienteId: string;
+    divisao?: { h: number; v: number } | null;
+    observacao?: string;
+}
+
 export interface EntradaKitMontagemPayload {
     assemblyInstanceId: string;
     kitId: string;
@@ -281,7 +359,7 @@ export interface FilamentoNecessario {
 export interface OutroInsumoNecessario {
     insumoId: string;
     quantidade: number | string;
-    tipo: 'material' | 'tempo' | 'outros' | 'embalagem'; // Updated
+    tipo: 'material' | 'outros' | 'embalagem'; // Removed 'tempo' - it's a service, not an insumo
     etapaInstalacao: string;
     nome?: string;
     id?: string;
@@ -346,7 +424,7 @@ export interface PedidoOrigem {
 
 export interface GrupoProducaoOtimizado {
     id?: string;
-    status: 'aguardando' | 'em_producao' | 'produzido' | 'atendido_por_estoque';
+    status: 'aguardando' | 'em_producao' | 'produzido' | 'atendido_por_estoque' | 'concluido_por_estoque';
     sourceName: string;
     sourceGrupoImpressaoId: string;
     pecaTipoDetalhado: string;
@@ -386,7 +464,7 @@ export interface GrupoMontagem {
     targetProductType: 'peca' | 'modelo' | 'kit' | 'produto_final';
     targetProductName: string;
     assemblyInstanceId: string;
-    status: 'aguardando_montagem' | 'em_montagem' | 'montado' | 'cancelado' | 'pronto_para_montagem' | 'produzido_aguardando_embalagem' | 'embalado';
+    status: 'aguardando_montagem' | 'em_montagem' | 'montado' | 'cancelado' | 'pronto_para_montagem' | 'produzido_aguardando_embalagem' | 'embalado' | 'concluido_por_estoque';
     timestampCriacao?: admin.firestore.Timestamp | admin.firestore.FieldValue;
     timestampInicio?: admin.firestore.Timestamp | admin.firestore.FieldValue | null;
     timestampConclusao?: admin.firestore.Timestamp | admin.firestore.FieldValue | null;
@@ -493,7 +571,7 @@ export interface LancamentoProduto {
     quantidade?: number;
     usuario: string;
     observacao?: string;
-    data: admin.firestore.Timestamp;
+    data: admin.firestore.Timestamp | admin.firestore.FieldValue;
     locais: {
         recipienteId: string;
         localId?: string;
@@ -551,7 +629,7 @@ export interface PosicaoEstoque {
 export interface LancamentoInsumo {
     // id: string; // Removed id field to allow Firestore to generate it
     insumoId: string;
-    tipoInsumo: 'filamento' | 'material' | 'outros' | 'embalagem' | 'tempo'; // Added 'tempo'
+    tipoInsumo: 'filamento' | 'material' | 'outros' | 'embalagem'; // Removed 'tempo' - it's a service, not an insumo
     tipoMovimento: 'entrada' | 'saida' | 'ajuste'; // Added 'ajuste'
     quantidade: number;
     unidadeMedida: 'gramas' | 'unidades' | 'horas';
@@ -571,12 +649,55 @@ export interface Insumo {
     // Add other relevant fields if necessary, based on how insumo documents are structured in Firestore
 }
 
-export interface LancamentoServico {
-    servicoId: 'impressao_3d' | 'embalagem';
-    optimizedGroupId?: string;
+// Payloads específicos para cada tipo de serviço
+export interface Impressao3DPayload {
+    impressora?: string;
+    total: number; // tempo em minutos
     pedidoId?: string;
-    quantidade: number;
+    optimizedGroupId?: string;
+}
+
+export interface MontagemPayload {
+    tipo: 'peça' | 'modelo' | 'kit';
+    total: number; // tempo em minutos
+    pedidoId?: string;
+    assemblyGroup?: string;
+    productId?: string;
+}
+
+export interface EmbalagemPayload {
+    total: number; // tempo em minutos
+    pedidoId?: string;
+    assemblyGroup?: string;
+}
+
+export interface LancamentoServico {
+    serviceType: "impressao_3d" | "montagem" | "embalagem";
+    origem: "pedido" | "producao" | "prototipagem" | "pessoal" | "outro";
+    usuario: string;
+    data: admin.firestore.Timestamp;
+    payload: Impressao3DPayload | MontagemPayload | EmbalagemPayload;
+}
+
+// Interface para a nova coleção de agregação mensal
+export interface ServicoMensal {
+    serviceType: "impressao_3d" | "montagem" | "embalagem";
+    mes_ano: string; // formato: "novembro_2025"
+    total: number; // soma de todos os totais (minutos)
+    custo_total: number; // soma de todos os custos
+    eventos: ServicoEvento[];
+    createdAt: admin.firestore.Timestamp;
+    updatedAt: admin.firestore.Timestamp;
+}
+
+export interface ServicoEvento {
+    id: string;
+    origem: "pedido" | "producao" | "prototipagem" | "pessoal" | "outro";
+    pedidoId?: string | null;
+    optimizedGroupId?: string | null;
+    assemblyGroup?: string | null;
+    total: number; // tempo em minutos
+    custo: number; // valor monetário
     data: admin.firestore.Timestamp;
     usuario: string;
-    origem?: string; // Added origem field
 }

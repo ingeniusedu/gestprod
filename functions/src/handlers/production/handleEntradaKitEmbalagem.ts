@@ -64,7 +64,15 @@ export const handleEntradaKitEmbalagem = async (event: { data?: DocumentSnapshot
                 if (newQuantidadeAtendida < produto.quantidade) {
                     allItemsAttended = false;
                 }
-                return { ...produto, quantidadeAtendida: newQuantidadeAtendida };
+                
+                // CORREÇÃO: Não atualizar modelos ou peças aqui
+                // Eles já foram atualizados pelos handlers específicos
+                // Apenas garantir que o kit esteja marcado como concluído
+                return { 
+                    ...produto, 
+                    quantidadeAtendida: newQuantidadeAtendida
+                    // Mantém modelos e pecas como estão (já atualizados pelos handlers específicos)
+                };
             }
             if ((produto.quantidadeAtendida || 0) < (produto.quantidade || 0)) {
                 allItemsAttended = false;

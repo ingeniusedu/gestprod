@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { db, auth } from '../services/firebase'; // Import auth
-import { collection, getDocs, doc, getDoc, updateDoc, query, where, Timestamp, addDoc, writeBatch, serverTimestamp, onSnapshot } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, updateDoc, query, where, Timestamp, addDoc, writeBatch, serverTimestamp, onSnapshot, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth'; // Import onAuthStateChanged
 import { Hourglass, Package, CheckCircle, XCircle, Play, Pause, Spool, MapPin, Users, PlusCircle, ChevronUp, ChevronDown } from 'lucide-react';
-import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto, PecaParte, ProductionGroupFilamento, ProductionGroupOutroInsumo, Historico, Configuracoes, DashboardMetrics, AlertaEstoque, Produto, Servico, LancamentoServico, ItemToDebit, OptimizedGroup, GrupoMontagem, LancamentoMontagem, ProdutoFinalNecessario, PackagingModelo, PackagingPeca, PedidoProduto, AtendimentoDetalhadoItem, AtendimentoDetalhadoItem as AtendimentoDetalhadoItemType } from '../types'; // Import AtendimentoDetalhadoItemType
+import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto, PecaParte, ProductionGroupFilamento, ProductionGroupOutroInsumo, Historico, Configuracoes, DashboardMetrics, AlertaEstoque, Produto, Servico, LancamentoServico, ItemToDebit, OptimizedGroup, GrupoMontagem, LancamentoMontagem, ProdutoFinalNecessario, PackagingModelo, PackagingPeca, PedidoProduto, AtendimentoDetalhadoItem, AtendimentoDetalhadoItem as AtendimentoDetalhadoItemType, UsoEstoquePayload } from '../types'; // Import AtendimentoDetalhadoItemType and UsoEstoquePayload
 import toast from 'react-hot-toast';
 import { LocalProduto, LocalInsumo, Recipiente } from '../types/mapaEstoque';
 import { v4 as uuidv4 } from 'uuid';
@@ -20,15 +20,163 @@ import { AllProductsData } from '../services/stockVerificationService';
 import { cleanObject } from '../utils/cleanObject';
 import { SummaryItem } from '../types'; // Import SummaryItem from types/index.ts
 import { useCallback } from 'react'; // Import useCallback
-import { useStockCalculations } from '../hooks/useStockCalculations'; // Import the new hook
+import { useStockCalculations } from '../hooks/useStockCalculations'; // Import new hook
 import { useProductionSummary } from '../hooks/useProductionSummary';
 import { useOptimizedGroups } from '../hooks/useOptimizedGroups';
-import { useAssemblyGroups } from '../hooks/useAssemblyGroups'; // Import the new hook
+import { useAssemblyGroups } from '../hooks/useAssemblyGroups'; // Import new hook
 import { formatTime, formatFilament, calculateEffectiveQuantityFulfilledByComponents, generateProductionGroupsForProduct, getGroupStockStatus, canConcludePedido, formatLocation } from '../utils/producaoUtils';
+import ProcessandoEmbalagemV2 from './components/ProcessandoEmbalagemV2';
+import CompletedOrdersTable from './components/CompletedOrdersTable';
+import { UsoEstoqueTab } from './components/UsoEstoqueTab';
+import { UsoEstoqueTabV2 } from './components/UsoEstoqueTabV2';
+import { UsoEstoqueTabV3 } from './components/UsoEstoqueTabV3';
+
+// 🆕 FUNÇÃO AUXILIAR PARA BUSCAR PEDIDO RELACIONADO
+const findRelatedPedido = (assemblyGroup: GrupoMontagem, pedidos: Pedido[]): { relatedPedido: Pedido | null; pedidoId: string } => {
+  console.log('🔍 DEBUG - Iniciando busca de pedido relacionado:', {
+    assemblyGroupId: assemblyGroup.id,
+    targetProductId: assemblyGroup.targetProductId,
+    produtosFinaisNecessariosLength: (assemblyGroup.produtosFinaisNecessarios || []).length
+  });
+
+  // Estratégia 1: Buscar por produtos finais necessários
+  const relatedPedido1 = pedidos.find(p => 
+    p.produtos.some(prod => 
+      (assemblyGroup.produtosFinaisNecessarios || []).some(produtoFinal => 
+        prod.produtoId === produtoFinal.produtoId
+      )
+    )
+  );
+
+  if (relatedPedido1) {
+    console.log('✅ Estratégia 1 - Pedido encontrado por produtos finais:', {
+      pedidoId: relatedPedido1.id,
+      pedidoNumero: relatedPedido1.numero
+    });
+    return { relatedPedido: relatedPedido1, pedidoId: relatedPedido1.id };
+  }
+
+  // Estratégia 2: Buscar por targetProductId
+  const relatedPedido2 = pedidos.find(p => 
+    p.produtos.some(prod => prod.produtoId === assemblyGroup.targetProductId)
+  );
+
+  if (relatedPedido2) {
+    console.log('✅ Estratégia 2 - Pedido encontrado por targetProductId:', {
+      pedidoId: relatedPedido2.id,
+      pedidoNumero: relatedPedido2.numero
+    });
+    return { relatedPedido: relatedPedido2, pedidoId: relatedPedido2.id };
+  }
+
+  // Estratégia 3: Buscar por assemblyGroup.id
+  const relatedPedido3 = pedidos.find(p => p.id === assemblyGroup.id);
+
+  if (relatedPedido3) {
+    console.log('✅ Estratégia 3 - Pedido encontrado por assemblyGroup.id:', {
+      pedidoId: relatedPedido3.id,
+      pedidoNumero: relatedPedido3.numero
+    });
+    return { relatedPedido: relatedPedido3, pedidoId: relatedPedido3.id };
+  }
+
+  // Estratégia 4: Usar assemblyGroupId como fallback
+  const fallbackId = assemblyGroup.id || '';
+  console.log('⚠️ Nenhum pedido encontrado, usando fallback:', {
+    assemblyGroupId: fallbackId,
+    totalPedidos: pedidos.length
+  });
+  
+  return { relatedPedido: null, pedidoId: fallbackId };
+};
+
+// 🆕 FUNÇÃO AUXILIAR PARA BUSCAR PEDIDO RELACIONADO A UM SUMMARYITEM
+const findRelatedPedidoForSummaryItem = (item: SummaryItem, pedidos: Pedido[]): { pedidoId: string | null; nivelUsado: number } => {
+  console.log('🔍 DEBUG - Buscando pedido para SummaryItem:', {
+    documentId: item.documentId,
+    tipo: item.tipo,
+    level: item.level,
+    sku: item.sku
+  });
+
+  // Se o item é um cabeçalho de pedido (PED-), extrair o pedidoId do documentId
+  if (item.sku.startsWith('PED-')) {
+    // O documentId do cabeçalho de pedido é o próprio pedidoId
+    const pedidoId = item.documentId;
+    const pedido = pedidos.find(p => p.id === pedidoId);
+    if (pedido) {
+      console.log('✅ Pedido encontrado via cabeçalho PED:', {
+        pedidoId,
+        pedidoNumero: pedido.numero
+      });
+      return { pedidoId, nivelUsado: 0 };
+    }
+  }
+
+  // Buscar pedidos que contêm este produto
+  const pedidosContendoProduto = pedidos.filter(pedido => 
+    pedido.produtos.some(produto => 
+      produto.produtoId === item.documentId && produto.tipo === item.tipo
+    )
+  );
+
+  if (pedidosContendoProduto.length > 0) {
+    // Usar o primeiro pedido encontrado
+    const pedidoId = pedidosContendoProduto[0].id;
+    console.log('✅ Pedido encontrado para SummaryItem:', {
+      pedidoId,
+      pedidoNumero: pedidosContendoProduto[0].numero,
+      totalPedidosEncontrados: pedidosContendoProduto.length
+    });
+    return { pedidoId, nivelUsado: item.level };
+  }
+
+  // Se não encontrou diretamente, buscar por hierarquia (produtos filhos)
+  for (const pedido of pedidos) {
+    for (const produto of pedido.produtos) {
+      // Verificar se este produto tem componentes que incluem o item
+      if (produto.tipo === 'kit' && produto.modelosComponentes) {
+        for (const modelo of produto.modelosComponentes) {
+          if (modelo.pecasComponentes?.some(peca => peca.id === item.documentId)) {
+            console.log('✅ Pedido encontrado via hierarquia (kit -> modelo -> peca):', {
+              pedidoId: pedido.id,
+              pedidoNumero: pedido.numero
+            });
+            return { pedidoId: pedido.id, nivelUsado: item.level + 2 }; // kit (0) -> modelo (1) -> peca (2)
+          }
+        }
+      } else if (produto.tipo === 'modelo' && produto.pecasComponentes) {
+        if (produto.pecasComponentes.some(peca => peca.id === item.documentId)) {
+          console.log('✅ Pedido encontrado via hierarquia (modelo -> peca):', {
+            pedidoId: pedido.id,
+            pedidoNumero: pedido.numero
+          });
+          return { pedidoId: pedido.id, nivelUsado: item.level + 1 }; // modelo (0) -> peca (1)
+        }
+      } else if (produto.tipo === 'peca' && produto.gruposImpressao) {
+        for (const grupo of produto.gruposImpressao) {
+          if (grupo.partes?.some(parte => parte.parteId === item.documentId)) {
+            console.log('✅ Pedido encontrado via hierarquia (peca -> parte):', {
+              pedidoId: pedido.id,
+              pedidoNumero: pedido.numero
+            });
+            return { pedidoId: pedido.id, nivelUsado: item.level + 1 }; // peca (0) -> parte (1)
+          }
+        }
+      }
+    }
+  }
+
+  console.log('⚠️ Nenhum pedido encontrado para SummaryItem:', {
+    documentId: item.documentId,
+    tipo: item.tipo
+  });
+  return { pedidoId: null, nivelUsado: item.level };
+};
 
 export default function Producao() {
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
-  const [activeTab, setActiveTab] = useState<'visao_geral' | 'aguardando' | 'em_producao' | 'em_montagem_peca' | 'em_montagem_modelo' | 'em_montagem_kit' | 'processando_embalagem' | 'finalizados'>('visao_geral');
+  const [activeTab, setActiveTab] = useState<'visao_geral' | 'aguardando' | 'em_producao' | 'em_montagem_peca' | 'em_montagem_modelo' | 'em_montagem_kit' | 'processando_embalagem' | 'processando_embalagem_v2' | 'finalizados' | 'uso_estoque' | 'uso_estoque_v2' | 'uso_estoque_v3'>('visao_geral');
   const [filamentColors, setFilamentColors] = useState<Record<string, string>>({});
   const [displayGroups, setDisplayGroups] = useState<ProductionGroup[]>([]);
   const [allInsumos, setAllInsumos] = useState<Insumo[]>([]);
@@ -59,7 +207,7 @@ export default function Producao() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   const { enrichPosicoesEstoque, getStockForProduct } = useStockCalculations();
-  const { assemblyGroups } = useAssemblyGroups(); // Use the hook
+  const { assemblyGroups } = useAssemblyGroups(); // Use hook
   const { optimizedGroups } = useOptimizedGroups(
     allInsumos,
     availablePecas,
@@ -176,7 +324,7 @@ export default function Producao() {
   }, []);
 
   const handleUseStock = useCallback(async (item: SummaryItem) => {
-    // Fetch detailed stock positions for the item
+    // Fetch detailed stock positions for item
     const { posicoesEstoque } = getStockForProduct(
       item.documentId,
       item.tipo,
@@ -191,6 +339,9 @@ export default function Producao() {
       recipientes
     );
 
+    // Buscar pedido relacionado e nível usado
+    const { pedidoId, nivelUsado } = findRelatedPedidoForSummaryItem(item, pedidos);
+
     const itemToDebitData: ItemToDebit = {
       id: item.documentId,
       nome: item.produtoNome,
@@ -198,12 +349,17 @@ export default function Producao() {
       estoqueAtualItem: item.emEstoque, // Use 'emEstoque' from SummaryItem
       localEstoqueItem: posicoesEstoque, // Use fetched detailed positions
       type: item.tipo,
-      // pedidoId and groupId are not directly available in SummaryItem,
-      // so they will be undefined unless we decide to pass them through SummaryItem.
-      // For now, we'll leave them out as they are optional in ItemToDebit.
+      pedidoId: pedidoId || undefined,
+      groupId: undefined, // Não temos groupId disponível
     };
 
-    setItemToDebit(itemToDebitData);
+    // Armazenar também o nível usado como propriedade adicional
+    const itemToDebitWithLevel = {
+      ...itemToDebitData,
+      nivelUsado,
+    };
+
+    setItemToDebit(itemToDebitWithLevel);
     setIsStockSelectionModalOpen(true);
   }, [
     setItemToDebit,
@@ -218,6 +374,7 @@ export default function Producao() {
     locaisProdutos,
     locaisInsumos,
     recipientes,
+    pedidos,
   ]);
 
   const updateProductionGroupStatus = useCallback(async (pedidoId: string, groupId: string, newStatus: OptimizedGroup['status']) => {
@@ -279,7 +436,7 @@ export default function Producao() {
 
   const handleLaunchSuccess = useCallback(async () => {
     if (selectedProductionGroup) {
-      // Update the status of the optimized group
+      // Update status of optimized group
       const newStatus = selectedProductionGroup.partesProntas ? 'produzido' : 'em_producao';
       await updateProductionGroupStatus(selectedProductionGroup.pedidosOrigem[0].pedidoId, selectedProductionGroup.id, newStatus);
     }
@@ -323,7 +480,7 @@ export default function Producao() {
             if (produto.gruposImpressaoProducao) {
               const updatedGruposImpressaoProducao = produto.gruposImpressaoProducao.map(group => {
                 if (group.id && groupIdsToUpdate.includes(group.id)) {
-                  // This group is part of the optimized group being launched
+                  // This group is part of optimized group being launched
                   if (group.status === 'aguardando') { // Only process groups that are waiting
                     const newStatus = optimizedGroup.partesProntas ? 'produzido' : 'em_producao';
                     return {
@@ -350,7 +507,6 @@ export default function Producao() {
               const anyInProduction = updatedProdutos.some(p => 
                   p.statusProducaoItem === 'em_producao' || 
                   p.statusProducaoItem === 'em_montagem_pecas' || 
-                  p.statusProducaoItem === 'em_montagem_modelos' ||
                   p.gruposImpressaoProducao?.some(g => g.status === 'em_producao')
               );
               if (anyInProduction) {
@@ -392,7 +548,7 @@ export default function Producao() {
   const handleStockSelection = useCallback(async (debits: { selectedPosition: PosicaoEstoque; quantityToDebit: number }[]) => {
     if (!itemToDebit) return;
 
-    const { id, nome, type } = itemToDebit;
+    const { id, nome, type, pedidoId, nivelUsado } = itemToDebit as any; // Cast para acessar nivelUsado
     let totalDebited = 0;
 
     if (!['parte', 'peca', 'modelo', 'kit'].includes(type)) {
@@ -402,44 +558,64 @@ export default function Producao() {
       return;
     }
 
+    // Se não temos pedidoId, não podemos criar um uso_estoque
+    if (!pedidoId) {
+      toast.error('Não foi possível identificar o pedido relacionado. O uso de estoque não pode ser processado.');
+      setIsStockSelectionModalOpen(false);
+      setItemToDebit(null);
+      return;
+    }
+
     try {
-      const batch = writeBatch(db);
-      for (const debit of debits) {
-        if (debit.quantityToDebit > 0) {
-          const lancamentoProduto: LancamentoProduto = {
-            id: uuidv4(),
+      // Criar LancamentoProducao com tipo USO_ESTOQUE
+      const lancamentoProducaoRef = doc(collection(db, 'lancamentosProducao'));
+      const posicoesConsumidas = debits
+        .filter(debit => debit.quantityToDebit > 0)
+        .map(debit => ({
+          produtoId: id,
+          produtoTipo: type as 'parte' | 'peca' | 'modelo' | 'kit',
+          posicaoEstoqueId: debit.selectedPosition.recipienteId!,
+          quantidade: debit.quantityToDebit,
+        }));
+
+      totalDebited = posicoesConsumidas.reduce((sum, pos) => sum + pos.quantidade, 0);
+
+      const lancamentoProducao = {
+        id: lancamentoProducaoRef.id,
+        tipoEvento: 'uso_estoque' as const,
+        timestamp: serverTimestamp(),
+        usuarioId: auth.currentUser?.uid || 'sistema',
+        payload: {
+          pedidoId,
+          nivelUsado: nivelUsado || 0,
+          produtoRaiz: {
+            id,
+            tipo: type as 'kit' | 'modelo' | 'peca' | 'parte',
+            quantidade: totalDebited,
+          },
+          produtosConsumidos: [{
             produtoId: id,
-            tipoProduto: type as LancamentoProduto['tipoProduto'],
-            tipoMovimento: 'saida',
-            usuario: auth.currentUser?.displayName || 'Sistema de Produção (Visão Geral)',
-            observacao: `Débito de estoque manual para ${nome} (SKU: ${id})`,
-            data: Timestamp.fromDate(new Date()),
-            locais: [
-              {
-                recipienteId: debit.selectedPosition.recipienteId!, // Non-null assertion
-                divisao: debit.selectedPosition.divisao,
-                quantidade: debit.quantityToDebit,
-                localId: debit.selectedPosition.localId || '',
-              }
-            ]
-          };
-          batch.set(doc(collection(db, 'lancamentosProdutos')), cleanObject(lancamentoProduto));
-          totalDebited += debit.quantityToDebit;
-        }
-      }
-      await batch.commit();
+            produtoTipo: type as 'kit' | 'modelo' | 'peca' | 'parte',
+            quantidade: totalDebited,
+            nivel: nivelUsado || 0,
+          }],
+          posicoesConsumidas,
+        } as UsoEstoquePayload,
+      };
+
+      await setDoc(lancamentoProducaoRef, cleanObject(lancamentoProducao));
       
-      toast.success(`Lançamento de saída de estoque para ${nome} criado com sucesso! Quantidade: ${totalDebited}`);
+      toast.success(`Uso de estoque para ${nome} registrado com sucesso! Quantidade: ${totalDebited}`);
       setIsStockSelectionModalOpen(false);
       setItemToDebit(null);
       // No need to call refetchAllData here, as onSnapshot listeners will handle updates
     } catch (error) {
       console.error("Error during manual stock debit from summary: ", error);
-      toast.error("Ocorreu um erro ao criar o lançamento de estoque. Verifique o console para mais detalhes.");
+      toast.error("Ocorreu um erro ao criar o lançamento de uso de estoque. Verifique o console para mais detalhes.");
       setIsStockSelectionModalOpen(false);
       setItemToDebit(null);
     }
-  }, [auth.currentUser, itemToDebit, uuidv4, cleanObject, db, Timestamp, setIsStockSelectionModalOpen, setItemToDebit]);
+  }, [auth.currentUser, itemToDebit, cleanObject, db, serverTimestamp, setIsStockSelectionModalOpen, setItemToDebit]);
 
   const handleOpenConclusionModal = useCallback((group: OptimizedGroup) => {
     setSelectedGroupForConclusion(group);
@@ -476,7 +652,7 @@ export default function Producao() {
         },
       }));
 
-      // Lançar produtos produzidos (partes)
+      // Lançar produtos candidatos (partes)
       for (const parteProduzida of producedParts) {
         if (parteProduzida.quantidadeProduzida > 0) {
           const lancamentoProdutoRef = doc(collection(db, 'lancamentosProdutos'));
@@ -559,7 +735,7 @@ export default function Producao() {
 
     } catch (error) {
         console.error("Erro ao enviar excedente para montagem:", error);
-        toast.error("Falha ao enviar excedente para montagem.");
+      toast.error("Falha ao enviar excedente para montagem.");
     }
   }, [pedidos, db, cleanObject, setIsExcessModalOpen]);
 
@@ -572,40 +748,45 @@ export default function Producao() {
     } else if (activeTab === 'visao_geral') {
       return []; // Visão Geral uses ProductionSummaryTable directly
     } else if (activeTab === 'em_montagem_peca') {
-      return assemblyGroups.filter(group => group.targetProductType === 'peca' && group.status !== 'montado');
+      return assemblyGroups.filter(group => 
+        group.targetProductType === 'peca' && 
+        group.status !== 'montado' &&
+        group.status !== 'concluido_por_estoque' &&
+        group.status !== 'concluido_estoque_peca' &&
+        group.status !== 'concluido_estoque_kit' &&
+        group.status !== 'concluido_estoque_modelo'
+      );
     } else if (activeTab === 'em_montagem_modelo') {
-      return assemblyGroups.filter(group => group.targetProductType === 'modelo' && group.status !== 'montado');
+      return assemblyGroups.filter(group => 
+        group.targetProductType === 'modelo' && 
+        group.status !== 'montado' &&
+        group.status !== 'concluido_por_estoque' &&
+        group.status !== 'concluido_estoque_peca' &&
+        group.status !== 'concluido_estoque_kit' &&
+        group.status !== 'concluido_estoque_modelo'
+      );
     } else if (activeTab === 'em_montagem_kit') {
-      return assemblyGroups.filter(group => group.targetProductType === 'kit' && group.status !== 'montado');
+      return assemblyGroups.filter(group => 
+        group.targetProductType === 'kit' && 
+        group.status !== 'montado' &&
+        group.status !== 'concluido_por_estoque' &&
+        group.status !== 'concluido_estoque_peca' &&
+        group.status !== 'concluido_estoque_kit' &&
+        group.status !== 'concluido_estoque_modelo'
+      );
     } else if (activeTab === 'processando_embalagem') {
-      return assemblyGroups.filter(group => group.targetProductType === 'produto_final');
+      return assemblyGroups.filter(group => 
+        group.targetProductType === 'produto_final' && 
+        group.status !== 'finalizado'
+      );
     } else if (activeTab === 'finalizados') {
       return pedidosList.filter(pedido => pedido.status === 'concluido');
+    } else if (activeTab === 'processando_embalagem_v2') {
+      return assemblyGroups.filter(group => group.targetProductType === 'produto_final');
     }
     return [];
   }, [activeTab, optimizedGroups, assemblyGroups]);
 
-  const handleLaunchPackagingTime = useCallback(async (pedidoId: string) => {
-    const time = packagingTime[pedidoId];
-    if (!time || time <= 0) {
-      toast.error("Por favor, insira um tempo de embalagem válido.");
-      return;
-    }
-
-    try {
-      await addDoc(collection(db, 'lancamentoServicos'), cleanObject({
-        servicoId: 'embalagem', // ou um ID de serviço específico para embalagem
-        pedidoId: pedidoId,
-        quantidade: time / 60, // Convertendo minutos para horas
-        data: Timestamp.now(),
-        usuario: auth.currentUser?.displayName || 'Sistema',
-      }));
-      toast.success("Tempo de embalagem lançado com sucesso!");
-    } catch (error) {
-      console.error("Erro ao lançar tempo de embalagem:", error);
-      toast.error("Falha ao lançar o tempo de embalagem.");
-    }
-  }, [packagingTime, auth.currentUser, db, Timestamp, cleanObject]);
 
   const handleConcluirMontagemPeca = useCallback(async (assemblyGroup: GrupoMontagem) => {
     if (!auth.currentUser) {
@@ -644,7 +825,7 @@ export default function Producao() {
     }
 
     try {
-      // Determine the next event based on parentKitId
+      // Determine next event based on parentKitId
       const tipoProximoEvento = assemblyGroup.parentKitId 
         ? 'entrada_modelo_montagem_kit' 
         : 'entrada_modelo_embalagem';
@@ -714,7 +895,7 @@ export default function Producao() {
         }));
       }
 
-      // NEW: Add pecasNecessarias to the payload
+      // NEW: Add pecasNecessarias to payload
       if (assemblyGroup.pecasNecessarias && Array.isArray(assemblyGroup.pecasNecessarias) && assemblyGroup.pecasNecessarias.length > 0) {
         payload.pecasNecessarias = assemblyGroup.pecasNecessarias.map((peca) => ({
           pecaId: peca.pecaId,
@@ -742,14 +923,70 @@ export default function Producao() {
 
   const handleToggleItem = useCallback((assemblyGroupId: string | undefined, itemId: string, isChecked: boolean) => {
     const currentAssemblyGroupId = assemblyGroupId ?? ''; // Provide a default empty string
-    setCheckedItems(prev => ({
-      ...prev,
-      [currentAssemblyGroupId]: {
-        ...prev[currentAssemblyGroupId],
-        [itemId]: isChecked,
-      },
-    }));
-  }, []);
+    
+    setCheckedItems(prev => {
+      const newCheckedItems = { ...prev };
+      const currentGroupItems = { ...newCheckedItems[currentAssemblyGroupId] };
+      
+      // Set the clicked item
+      currentGroupItems[itemId] = isChecked;
+      
+      // If this is a parent item, cascade to children
+      if (itemId.startsWith('kit_')) {
+        // Find assembly group to get its children
+        const assemblyGroup = assemblyGroups.find(ag => ag.id === currentAssemblyGroupId);
+        if (assemblyGroup && assemblyGroup.produtosFinaisNecessarios) {
+          const kit = assemblyGroup.produtosFinaisNecessarios.find(pf => pf.produtoId === itemId.replace('kit_', ''));
+          if (kit) {
+            // Cascade to modelos (only if kit type is 'kit')
+            if (kit.tipo === 'kit' && kit.modelos) {
+              kit.modelos.forEach(modelo => {
+                const modeloId = `modelo_${modelo.modeloId}`;
+                currentGroupItems[modeloId] = isChecked;
+                // Cascade to pecas of modelo
+                if (modelo.pecas) {
+                  modelo.pecas.forEach(peca => {
+                    const pecaId = `peca_${peca.pecaId}`;
+                    currentGroupItems[pecaId] = isChecked;
+                  });
+                }
+              });
+            }
+            // Cascade to pecas
+            if (kit.tipo === 'kit' && kit.pecas) {
+              kit.pecas.forEach(peca => {
+                const pecaId = `peca_${peca.pecaId}`;
+                currentGroupItems[pecaId] = isChecked;
+              });
+            }
+          }
+        }
+      }
+      
+      // If this is a modelo, cascade to its pecas
+      if (itemId.startsWith('modelo_')) {
+        const assemblyGroup = assemblyGroups.find(ag => ag.id === currentAssemblyGroupId);
+        if (assemblyGroup && assemblyGroup.produtosFinaisNecessarios) {
+          // Find the kit that contains this modelo
+          const kit = assemblyGroup.produtosFinaisNecessarios.find(pf => 
+            pf.tipo === 'kit' && pf.modelos?.some(m => m.modeloId === itemId.replace('modelo_', ''))
+          );
+          if (kit && kit.modelos) {
+            const modelo = kit.modelos.find(m => m.modeloId === itemId.replace('modelo_', ''));
+            if (modelo && modelo.pecas) {
+              modelo.pecas.forEach(peca => {
+                const pecaId = `peca_${peca.pecaId}`;
+                currentGroupItems[pecaId] = isChecked;
+              });
+            }
+          }
+        }
+      }
+      
+      newCheckedItems[currentAssemblyGroupId] = currentGroupItems;
+      return newCheckedItems;
+    });
+  }, [assemblyGroups]);
 
   const handleStartPackaging = useCallback((assemblyGroupId: string | undefined) => {
     const currentAssemblyGroupId = assemblyGroupId ?? ''; // Provide a default empty string
@@ -759,61 +996,195 @@ export default function Producao() {
     }));
   }, []);
 
-  const concludePedido = useCallback(async (pedidoId: string) => {
+  const updatePackagingTime = useCallback((assemblyGroupId: string, time: number) => {
+    setPackagingTime(prev => ({
+      ...prev,
+      [assemblyGroupId]: time,
+    }));
+  }, []);
+
+  const getBloqueioFinalizacao = useCallback((assemblyGroup: GrupoMontagem, pedidoId: string): string => {
+    // Verificar se a embalagem foi iniciada
+    if (!isPackagingStarted[assemblyGroup.id ?? '']) {
+      return "Embalagem não iniciada";
+    }
+
+    // Verificar se há produtos finais suficientes
+    const canConcludePackaging = (assemblyGroup.produtosFinaisNecessarios ?? []).every(produto =>
+      (produto.quantidadeAtendida || 0) >= produto.quantidade
+    );
+    if (!canConcludePackaging) {
+      return "Produtos finais insuficientes";
+    }
+
+    // Verificar por contagem total de checkboxes
+    const assemblyGroupCheckedItems = checkedItems[assemblyGroup.id ?? ''] || {};
+    const checkedKeys = Object.keys(assemblyGroupCheckedItems);
+    const checkedCount = Object.values(assemblyGroupCheckedItems).filter(Boolean).length;
+    
+    // Calcular quantidade total de itens que deveriam estar marcados
+    let totalExpectedItems = 0;
+    (assemblyGroup.produtosFinaisNecessarios ?? []).forEach(produto => {
+      totalExpectedItems++; // O produto principal
+      if (produto.tipo === 'kit') {
+        const kitItem = produto as any;
+        if (kitItem.modelos) {
+          totalExpectedItems += kitItem.modelos.length;
+          // Contar peças dentro dos modelos
+          kitItem.modelos.forEach((modelo: PackagingModelo) => {
+            if (modelo.pecas) {
+              totalExpectedItems += modelo.pecas.length;
+            }
+          });
+        }
+        if (kitItem.pecas) {
+          totalExpectedItems += kitItem.pecas.length;
+        }
+      }
+    });
+    
+    // Verificar se todos os checkboxes esperados estão marcados
+    if (checkedCount < totalExpectedItems || checkedKeys.length < totalExpectedItems) {
+      return "Checkboxes não marcados";
+    }
+
+    // Verificar se o tempo de embalagem foi registrado
+    const time = packagingTime[assemblyGroup.id ?? ''];
+    if (!time || time <= 0) {
+      return "Tempo de embalagem não registrado";
+    }
+    
+    return ""; // Sem bloqueio
+  }, [isPackagingStarted, checkedItems, packagingTime]);
+
+  const canFinalizarPedido = useCallback((assemblyGroup: GrupoMontagem, pedidoId: string): boolean => {
+    // DEBUG: Log inicial da validação
+    console.log('🔍 DEBUG - canFinalizarPedido chamado:', {
+      assemblyGroupId: assemblyGroup.id,
+      pedidoId,
+      isPackagingStarted: isPackagingStarted[assemblyGroup.id ?? ''],
+      checkedItems: checkedItems[assemblyGroup.id ?? ''],
+      packagingTime: packagingTime[assemblyGroup.id ?? ''],
+      assemblyGroupProdutos: assemblyGroup.produtosFinaisNecessarios
+    });
+
+    // DEBUG DETALHADO: Verificar estados atuais
+    console.log('📊 ESTADOS ATUAIS (JSON.stringify):', JSON.stringify({
+      'packagingTime': packagingTime,
+      'isPackagingStarted': isPackagingStarted,
+      'checkedItems': checkedItems,
+      'selectedPackagingInsumos': selectedPackagingInsumos
+    }, null, 2));
+
+    // Verificar se a embalagem foi iniciada
+    if (!isPackagingStarted[assemblyGroup.id ?? '']) {
+      console.log('🔍 DEBUG - Embalagem não iniciada para assemblyGroup:', assemblyGroup.id);
+      return false;
+    }
+
+    // Verificar se há produtos finais suficientes
+    const canConcludePackaging = (assemblyGroup.produtosFinaisNecessarios ?? []).every(produto =>
+      (produto.quantidadeAtendida || 0) >= produto.quantidade
+    );
+    if (!canConcludePackaging) {
+      console.log('🔍 DEBUG - Produtos finais insuficientes para assemblyGroup:', assemblyGroup.id);
+      return false;
+    }
+
+    // NOVA ABORDAGEM: Verificar por contagem total de checkboxes
+    const assemblyGroupCheckedItems = checkedItems[assemblyGroup.id ?? ''] || {};
+    const checkedKeys = Object.keys(assemblyGroupCheckedItems);
+    const checkedCount = Object.values(assemblyGroupCheckedItems).filter(Boolean).length;
+    
+    // Calcular quantidade total de itens que deveriam estar marcados
+    let totalExpectedItems = 0;
+    (assemblyGroup.produtosFinaisNecessarios ?? []).forEach(produto => {
+      totalExpectedItems++; // O produto principal
+      if (produto.tipo === 'kit') {
+        const kitItem = produto as any;
+        if (kitItem.modelos) {
+          totalExpectedItems += kitItem.modelos.length;
+          // Contar peças dentro dos modelos
+          kitItem.modelos.forEach((modelo: PackagingModelo) => {
+            if (modelo.pecas) {
+              totalExpectedItems += modelo.pecas.length;
+            }
+          });
+        }
+        if (kitItem.pecas) {
+          totalExpectedItems += kitItem.pecas.length;
+        }
+      }
+    });
+    
+    // DEBUG: Log de checkboxes
+    console.log('🔍 DEBUG - Validação de checkboxes:', {
+      assemblyGroupId: assemblyGroup.id,
+      checkedCount,
+      totalExpectedItems,
+      checkedKeys: checkedKeys.length,
+      assemblyGroupCheckedItems: assemblyGroupCheckedItems
+    });
+    
+    // Verificar se todos os checkboxes esperados estão marcados
+    if (checkedCount < totalExpectedItems || checkedKeys.length < totalExpectedItems) {
+      console.log('🔍 DEBUG - Checkboxes insuficientes para assemblyGroup:', assemblyGroup.id);
+      return false;
+    }
+
+    // Verificar se o tempo de embalagem foi registrado - AGORA USANDO O assemblyGroup.id
+    const time = packagingTime[assemblyGroup.id ?? ''];
+    if (!time || time <= 0) {
+      console.log('🔍 DEBUG - Tempo de embalagem inválido para assemblyGroup:', assemblyGroup.id, { time, assemblyGroupId: assemblyGroup.id });
+      return false;
+    }
+    
+    console.log('🔍 DEBUG - canFinalizarPedido retornando true para assemblyGroup:', assemblyGroup.id);
+    return true;
+  }, [isPackagingStarted, checkedItems, packagingTime]);
+
+  // ✅ FUNÇÃO SIMPLIFICADA PARA CONCLUSÃO DE PEDIDO
+  const concludePedido = useCallback(async (assemblyGroupId: string) => {
+    if (!auth.currentUser) {
+      toast.error("Você precisa estar logado para finalizar um pedido.");
+      return;
+    }
+
     try {
-      const pedidoToUpdate = pedidos.find(p => p.id === pedidoId);
-      if (!pedidoToUpdate) {
-        console.error("Pedido não encontrado no estado local:", pedidoId);
+      toast.loading("Finalizando pedido...", { id: 'finalizando-pedido' });
+      
+      // Buscar assembly group
+      const assemblyGroup = assemblyGroups.find(ag => ag.id === assemblyGroupId);
+      if (!assemblyGroup) {
+        toast.dismiss('finalizando-pedido');
+        toast.error("Grupo de montagem não encontrado.");
         return;
       }
 
-      const batch = writeBatch(db);
-      const pedidoRef = doc(db, 'pedidos', pedidoId);
-
-      // Lançar insumos de embalagem
-      const insumosParaLancar = selectedPackagingInsumos[pedidoId] ?? [];
-      for (const { insumo, quantidade } of insumosParaLancar) {
-        const lancamentoRef = doc(collection(db, 'lancamentosInsumos'));
-        batch.set(lancamentoRef, {
-          id: uuidv4(),
-          insumoId: insumo.id,
-          tipoInsumo: 'material', // Assuming packaging insumos are 'material' type
-          tipoMovimento: 'saida',
-          quantidade: quantidade,
-          unidadeMedida: 'unidades',
-          detalhes: `Consumo de embalagem para Pedido #${pedidoToUpdate.numero || 'N/A'}`,
-          data: Timestamp.now(),
-        });
+      // Buscar pedido relacionado
+      const { relatedPedido, pedidoId } = findRelatedPedido(assemblyGroup, pedidos);
+      if (!relatedPedido) {
+        toast.dismiss('finalizando-pedido');
+        toast.error("Pedido não encontrado.");
+        return;
       }
 
-      // Atualizar status do pedido
-      batch.update(pedidoRef, {
+      // Atualizar status do pedido para concluído
+      const pedidoRef = doc(db, 'pedidos', pedidoId);
+      await updateDoc(pedidoRef, {
         status: 'concluido',
-        dataConclusao: Timestamp.now(),
+        dataConclusao: Timestamp.now()
       });
 
-      await batch.commit();
-
-      // Limpar estado local
-      setSelectedPackagingInsumos(prev => {
-        const newState = { ...prev };
-        delete newState[pedidoId];
-        return newState;
-      });
-      setPackagingTime(prev => {
-        const newState = { ...prev };
-        delete newState[pedidoId];
-        return newState;
-      });
-
-      // No need to call refetchAllData here, as onSnapshot listeners will handle updates
-      toast.success("Pedido finalizado com sucesso!");
-
+      toast.dismiss('finalizando-pedido');
+      toast.success(`Pedido #${relatedPedido.numero} finalizado com sucesso!`);
+      
     } catch (error) {
-      console.error("Erro ao finalizar o pedido: ", error);
-      toast.error("Ocorreu um erro ao tentar finalizar o pedido. Verifique o console para mais detalhes.");
+      console.error("Erro ao finalizar pedido:", error);
+      toast.dismiss('finalizando-pedido');
+      toast.error("Erro ao finalizar pedido.");
     }
-  }, [pedidos, selectedPackagingInsumos, setSelectedPackagingInsumos, setPackagingTime, auth.currentUser, uuidv4, Timestamp, db, cleanObject]);
+  }, [auth.currentUser, assemblyGroups, pedidos, db, Timestamp, updateDoc]);
 
   const handleOpenLaunchModal = (group: OptimizedGroup) => {
     setSelectedProductionGroup(group);
@@ -831,83 +1202,102 @@ export default function Producao() {
         <nav className="-mb-px flex space-x-8" aria-label="Tabs">
           <button
             onClick={() => setActiveTab('visao_geral')}
-            className={`${
-              activeTab === 'visao_geral'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            className={`${activeTab === 'visao_geral'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Visão Geral
           </button>
           <button
             onClick={() => setActiveTab('aguardando')}
-            className={`${
-              activeTab === 'aguardando'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            className={`${activeTab === 'aguardando'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Aguardando
           </button>
           <button
             onClick={() => setActiveTab('em_producao')}
-            className={`${
-              activeTab === 'em_producao'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            className={`${activeTab === 'em_producao'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Em Produção
           </button>
           <button
             onClick={() => setActiveTab('em_montagem_peca')}
-            className={`${
-              activeTab === 'em_montagem_peca'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            className={`${activeTab === 'em_montagem_peca'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Em Montagem - Peça
           </button>
           <button
             onClick={() => setActiveTab('em_montagem_modelo')}
-            className={`${
-              activeTab === 'em_montagem_modelo'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            className={`${activeTab === 'em_montagem_modelo'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Em Montagem - Modelo
           </button>
           <button
             onClick={() => setActiveTab('em_montagem_kit')}
-            className={`${
-              activeTab === 'em_montagem_kit'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            className={`${activeTab === 'em_montagem_kit'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Em Montagem - Kit
           </button>
           <button
-            onClick={() => setActiveTab('processando_embalagem')}
-            className={`${
-              activeTab === 'processando_embalagem'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            onClick={() => setActiveTab('processando_embalagem_v2')}
+            className={`${activeTab === 'processando_embalagem_v2'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Processando Embalagem
           </button>
           <button
             onClick={() => setActiveTab('finalizados')}
-            className={`${
-              activeTab === 'finalizados'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            className={`${activeTab === 'finalizados'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             Finalizados
+          </button>
+          <button
+            onClick={() => setActiveTab('uso_estoque')}
+            className={`${activeTab === 'uso_estoque'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+          >
+            Uso de Estoque (Legado)
+          </button>
+          <button
+            onClick={() => setActiveTab('uso_estoque_v2')}
+            className={`${activeTab === 'uso_estoque_v2'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+          >
+            Uso de Estoque V2
+          </button>
+          <button
+            onClick={() => setActiveTab('uso_estoque_v3')}
+            className={`${activeTab === 'uso_estoque_v3'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+          >
+            Uso de Estoque V3
           </button>
         </nav>
       </div>
@@ -1052,13 +1442,13 @@ export default function Producao() {
                     <button onClick={() => revertProductionGroupStatus(group.pedidosOrigem[0].pedidoId, group.id, 'em_producao')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700">
                       <XCircle className="h-3 w-3 mr-1" /> Reverter
                     </button>
-                    <button onClick={() => updateProductionGroupStatus(group.pedidosOrigem[0].pedidoId, group.id, 'aguardando')} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-orange-600 hover:bg-orange-700">
+                    <button onClick={() => updateProductionGroupStatus(group.pedidosOrigem[0].pedidoId, group.id, 'aguardando')} className="inline-flex items-center px-3 py-1 border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-orange-600 hover:bg-orange-700">
                       <Pause className="h-3 w-3 mr-1" /> Pausar
                     </button>
                     <button onClick={() => {
                       setSelectedGroupForConclusion(group);
                       setIsConclusionModalOpen(true);
-                    }} className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
+                    }} className="inline-flex items-center px-3 py-1 border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
                       <CheckCircle className="h-3 w-3 mr-1" /> Concluir Impressão
                     </button>
                   </div>
@@ -1207,7 +1597,7 @@ export default function Producao() {
                     <h4 className="text-lg font-semibold text-gray-800 mb-3">Modelos Necessários:</h4>
                     <ul className="list-disc list-inside text-sm space-y-1">
                       {assemblyGroup.modelosNecessarios?.map((modelo, index) => {
-                        const calculatedQuantidadeAtendida = (modelo.atendimentoDetalhado || []).reduce((sum: number, item: AtendimentoDetalhadoItemType) => sum + item.quantidade, 0);
+                        const calculatedQuantidadeAtendida = (modelo.atendimentoDetalhado || []).reduce((sum, item) => sum + item.quantidade, 0);
                         const isFullyAttended = calculatedQuantidadeAtendida === modelo.quantidade;
                         return (
                           <li key={index} className={isFullyAttended ? 'text-green-600' : 'text-red-600'}>
@@ -1270,7 +1660,20 @@ export default function Producao() {
           <div className="space-y-6">
             {getFilteredDisplayGroups(pedidos).length > 0 ? (
               (getFilteredDisplayGroups(pedidos) as GrupoMontagem[]).map((assemblyGroup: GrupoMontagem) => {
-                const pedidoId: string = assemblyGroup.targetProductId ?? ''; // The pedidoId is stored in targetProductId
+                // ✅ NOVA ABORDAGEM: Usar função auxiliar unificada
+                const { relatedPedido, pedidoId } = findRelatedPedido(assemblyGroup, pedidos);
+                const assemblyGroupId = assemblyGroup.id ?? '';
+                
+                // Se relatedPedido for null, usar o assemblyGroupId como fallback
+                const finalPedidoId = relatedPedido?.id || assemblyGroupId;
+                
+  console.log('🔍 DEBUG - Lógica unificada de pedidoId:', {
+    assemblyGroupId,
+    finalPedidoId,
+    relatedPedidoFound: !!relatedPedido,
+    pedidoNumero: relatedPedido?.numero
+  });
+                
                 const canConcludePackaging = (assemblyGroup.produtosFinaisNecessarios ?? []).every(produto =>
                   (produto.quantidadeAtendida || 0) >= produto.quantidade
                 );
@@ -1282,38 +1685,14 @@ export default function Producao() {
                       <div className="flex space-x-2">
                         <button
                           onClick={() => handleStartPackaging(assemblyGroup.id)}
-                          disabled={isPackagingStarted[assemblyGroup.id ?? ''] || !canConcludePackaging}
+                          disabled={isPackagingStarted[assemblyGroupId] || !canConcludePackaging}
                           className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
                         >
                           <Play className="h-5 w-5 mr-2" /> Iniciar Embalagem
                         </button>
                         <button
-                          onClick={() => concludePedido(pedidoId)}
-                          disabled={!isPackagingStarted[assemblyGroup.id ?? ''] || !canConcludePackaging || !(assemblyGroup.produtosFinaisNecessarios ?? []).every(produto => {
-                            const allChildrenChecked = (item: ProdutoFinalNecessario | PackagingModelo | PackagingPeca): boolean => {
-                              let itemId: string | undefined;
-                              if ('produtoId' in item && item.produtoId) {
-                                itemId = item.produtoId;
-                              } else if ('modeloId' in item && item.modeloId) {
-                                itemId = item.modeloId;
-                              } else if ('pecaId' in item && item.pecaId) {
-                                itemId = item.pecaId;
-                              }
-
-                          if (!itemId) return false;
-                          const assemblyGroupCheckedItems = checkedItems[assemblyGroup.id ?? ''] || {};
-                          if (!assemblyGroupCheckedItems[itemId]) return false;
-
-                          if ('modelos' in item && 'modelos' in item && item.modelos) {
-                            if (!((item.modelos ?? []) as PackagingModelo[]).every(allChildrenChecked)) return false;
-                          }
-                          if ('pecas' in item && 'pecas' in item && item.pecas) {
-                            if (!((item.pecas ?? []) as PackagingPeca[]).every(allChildrenChecked)) return false;
-                          }
-                          return true;
-                        };
-                        return allChildrenChecked(produto);
-                      })}
+                          onClick={() => concludePedido(assemblyGroupId)}
+                          disabled={!canFinalizarPedido(assemblyGroup, finalPedidoId)}
                           className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
                         >
                           <CheckCircle className="h-5 w-5 mr-2" /> Finalizar Pedido
@@ -1328,9 +1707,9 @@ export default function Producao() {
                             key={produto.produtoId || `item-${index}`}
                             item={produto}
                             type={produto.tipo as 'kit' | 'modelo' | 'peca'}
-                            assemblyGroupId={assemblyGroup.id ?? ''}
-                            isPackagingStarted={isPackagingStarted[assemblyGroup.id ?? ''] || false}
-                            checkedItems={checkedItems[assemblyGroup.id ?? ''] || {}}
+                            assemblyGroupId={assemblyGroupId}
+                            isPackagingStarted={isPackagingStarted[assemblyGroupId] || false}
+                            checkedItems={checkedItems[assemblyGroupId] || {}}
                             onToggleItem={handleToggleItem}
                           />
                         ))}
@@ -1339,45 +1718,60 @@ export default function Producao() {
                     <div className="mt-4">
                       <button
                         onClick={() => {
-                          const relatedPedido = pedidos.find(p => p.id === pedidoId);
-                          if (relatedPedido) {
-                            setSelectedPedidoForPackaging(relatedPedido);
+                          const targetPedido = relatedPedido || pedidos.find(p => p.id === finalPedidoId);
+                          if (targetPedido) {
+                            setSelectedPedidoForPackaging(targetPedido);
                             setIsPackagingInsumoModalOpen(true);
                           } else {
-                            alert("Pedido relacionado não encontrado para adicionar insumos de embalagem.");
+                            console.error('❌ Nenhum pedido encontrado para adicionar insumos de embalagem:', {
+                              relatedPedido: !!relatedPedido,
+                              finalPedidoId,
+                              pedidosCount: pedidos.length
+                            });
+                            toast.error("Erro ao buscar informações do pedido. Recarregue a página e tente novamente.");
                           }
                         }}
-                        className="inline-flex items-center px-3 py-1 border border-dashed text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200"
+                        className="inline-flex items-center px-3 py-1 border-dashed text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200"
                       >
                         <PlusCircle className="h-4 w-4 mr-2" /> Adicionar Insumo de Embalagem
                       </button>
                       <div className="mt-2">
-                        {selectedPackagingInsumos[pedidoId]?.map(({ insumo, quantidade }) => (
+                        {selectedPackagingInsumos[assemblyGroupId]?.map(({ insumo, quantidade }) => (
                           <div key={insumo.id} className="text-sm">{insumo.nome}: {quantidade}</div>
                         ))}
                       </div>
                     </div>
                     <div className="mt-4">
-                      <label htmlFor={`packaging-time-${pedidoId}`} className="block text-sm font-medium text-gray-700">
+                      <label htmlFor={`packaging-time-${assemblyGroupId}`} className="block text-sm font-medium text-gray-700">
                         Tempo de Embalagem (minutos)
                       </label>
-                      <div className="flex items-center space-x-2">
+                      <div className="mt-2 flex items-center space-x-2">
                         <input
                           type="number"
-                          id={`packaging-time-${pedidoId}`}
-                          value={packagingTime[pedidoId] || ''}
-                          onChange={(e) => setPackagingTime({ ...packagingTime, [pedidoId]: Number(e.target.value) })}
-                          className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                          id={`packaging-time-${assemblyGroupId}`}
+                          min="0"
+                          step="1"
+                          className="block w-32 rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                          placeholder="Ex: 15"
+                          value={packagingTime[assemblyGroupId] || ''}
+                          onChange={(e) => {
+                            const value = Number(e.target.value) || 0;
+                            updatePackagingTime(assemblyGroupId, value);
+                          }}
                         />
-                        <button
-                          onClick={() => handleLaunchPackagingTime(pedidoId)}
-                          className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
-                        >
-                          Lançar Tempo
-                        </button>
+                        <span className="text-sm text-gray-500">min</span>
                       </div>
+                      {packagingTime[assemblyGroupId] && packagingTime[assemblyGroupId] > 0 && (
+                        <div className="mt-2 text-green-600 bg-green-50 p-2 rounded">
+                          ✓ Tempo registrado: {packagingTime[assemblyGroupId]} minutos
+                        </div>
+                      )}
                     </div>
-                    {!canConcludePackaging && <p className="text-xs text-center text-red-600 mt-2">Finalização bloqueada: Produtos finais insuficientes.</p>}
+                    {!canFinalizarPedido(assemblyGroup, finalPedidoId) && (
+                      <p className="text-xs text-center text-red-600 mt-2">
+                        Finalização bloqueada: {getBloqueioFinalizacao(assemblyGroup, finalPedidoId)}
+                      </p>
+                    )}
                   </div>
                 );
               })
@@ -1389,10 +1783,24 @@ export default function Producao() {
           </div>
         )}
 
+        {activeTab === 'processando_embalagem_v2' && (
+          <ProcessandoEmbalagemV2 />
+        )}
+
         {activeTab === 'finalizados' && (
-          <div className="text-center py-12 col-span-full">
-            <p className="text-gray-600">WIP: Área para itens finalizados.</p>
-          </div>
+          <CompletedOrdersTable pedidos={getFilteredDisplayGroups(pedidos) as Pedido[]} />
+        )}
+
+        {activeTab === 'uso_estoque' && (
+          <UsoEstoqueTab />
+        )}
+
+        {activeTab === 'uso_estoque_v2' && (
+          <UsoEstoqueTabV2 />
+        )}
+
+        {activeTab === 'uso_estoque_v3' && (
+          <UsoEstoqueTabV3 />
         )}
       </div>
 
@@ -1453,14 +1861,42 @@ export default function Producao() {
         <InsumoSelectionModal
           isOpen={isPackagingInsumoModalOpen}
           onClose={() => setIsPackagingInsumoModalOpen(false)}
-          onSelect={(insumo: Insumo, quantidade: number) => {
-            const pedidoId = selectedPedidoForPackaging?.id ?? ''; // Add nullish coalescing
-            const existingInsumos = selectedPackagingInsumos[pedidoId] || [];
-            const updatedInsumos = [...existingInsumos, { insumo, quantidade }];
-            setSelectedPackagingInsumos({ ...selectedPackagingInsumos, [pedidoId]: updatedInsumos });
+          onSelect={(selectedInsumos: { insumo: Insumo, quantidade: number }[]) => {
+            // Usar assemblyGroupId em vez de pedidoId para consistência
+            const assemblyGroup = assemblyGroups.find(ag => 
+              ag.produtosFinaisNecessarios?.some(pf => 
+                pf.produtoId === selectedPedidoForPackaging?.produtos[0]?.produtoId
+              )
+            );
+            const assemblyGroupId = assemblyGroup?.id || selectedPedidoForPackaging.id;
+            
+            // Create a map of existing insumos to avoid duplicates
+            const existingInsumoMap = new Map((selectedPackagingInsumos[assemblyGroupId] || []).map(item => [item.insumo.id, item]));
+            
+            // Add new insumos, replacing any existing ones with the same ID
+            selectedInsumos.forEach(newItem => {
+              existingInsumoMap.set(newItem.insumo.id, newItem);
+            });
+            
+            // Convert back to array
+            const updatedInsumos = Array.from(existingInsumoMap.values());
+            
+            setSelectedPackagingInsumos({ ...selectedPackagingInsumos, [assemblyGroupId]: updatedInsumos });
             setIsPackagingInsumoModalOpen(false);
           }}
-          insumoTipoFilter={'embalagem'}
+          initialSelectedInsumos={
+            // Buscar insumos pelo assemblyGroupId correspondente
+ (() => {
+              const assemblyGroup = assemblyGroups.find(ag => 
+                ag.produtosFinaisNecessarios?.some(pf => 
+                  pf.produtoId === selectedPedidoForPackaging?.produtos[0]?.produtoId
+                )
+              );
+              const assemblyGroupId = assemblyGroup?.id || selectedPedidoForPackaging.id;
+              return selectedPackagingInsumos[assemblyGroupId] || [];
+            })()
+          }
+          insumoTipoFilter={null}
         />
       )}
     </div>

@@ -61,9 +61,11 @@ export interface GrupoMontagem {
   targetProductType?: string;
   parentModeloId?: string;
   parentKitId?: string;
+  pedidoId?: string; // Added pedidoId field
   pedidoNumero?: string;
   isAvulsa?: boolean;
   status?: string;
+  sourceOptimizedGroupId?: string; // Added sourceOptimizedGroupId
   payload?: {
     quantidade?: number;
   };
@@ -105,6 +107,8 @@ export interface GrupoMontagem {
     quantidade: number;
     quantidadeAtendida?: number;
     tipo: 'peca' | 'modelo' | 'kit'; // Changed type to union
+    modelos?: PackagingModelo[]; // Added modelos for compatibility
+    pecas?: PackagingPeca[]; // Added pecas for compatibility
   }[];
 }
 
@@ -149,6 +153,7 @@ export interface ModeloComponente {
 }
 
 export interface PecaComponente {
+  id: string;
   SKU: string;
   nome: string;
   quantidade: number;
@@ -192,6 +197,13 @@ export interface Peca {
       quantidade: number;
     }[];
   }[];
+  custoCalculado?: number;
+  custoCalculadoFilamento?: number;
+  custoCalculadoImpressao?: number;
+  custoCalculadoMontagem?: number;
+  custoCalculadoInsumos?: number;
+  precoSugerido?: number;
+  tempoMontagem?: number;
 }
 
 export interface Parte {
@@ -208,25 +220,76 @@ export interface Modelo {
     pecaId: string;
     quantidade: number;
   }[];
+  custoCalculado?: number;
+  custoCalculadoFilamento?: number;
+  custoCalculadoImpressao?: number;
+  custoCalculadoMontagem?: number;
+  custoCalculadoInsumos?: number;
+  precoSugerido?: number;
+  tempoMontagem?: number;
+  tempoMontagemAdicional?: number;
+  insumosAdicionais?: {
+    insumoId: string;
+    quantidade: number;
+  }[];
+  posicoesEstoque?: PosicaoEstoque[];
+  estoqueTotal?: number;
 }
 
 export interface Kit {
   id: string;
   nome: string;
   SKU: string;
-  modelos: {
+  // Compatibilidade com estrutura antiga (modelos) e nova (componentes)
+  modelos?: {
     modeloId: string;
     quantidade: number;
   }[];
+  componentes?: {
+    id: string;
+    nome: string;
+    sku: string;
+    quantidade: number;
+    tipo: 'modelo' | 'peca';
+  }[];
+  insumosAdicionais?: {
+    insumoId: string;
+    nome: string;
+    tipo: 'material' | 'tempo' | 'outros' | 'embalagem';
+    quantidade: number;
+  }[];
+  custoCalculado?: number;
+  custoCalculadoFilamento?: number;
+  custoCalculadoImpressao?: number;
+  custoCalculadoMontagem?: number;
+  custoCalculadoInsumos?: number;
+  precoSugerido?: number;
+  tempoMontagem?: number;
+  tempoMontagemAdicional?: number;
+  consumoFilamento?: number;
+  estoqueTotal?: number; // Para compatibilidade com página de estoque
+  posicoesEstoque?: PosicaoEstoque[];
 }
 
 export interface Insumo {
   id: string;
   nome: string;
-  tipo: 'material' | 'tempo' | 'outros';
+  tipo: 'material' | 'tempo' | 'outros' | 'embalagem';
+  unidade?: string;
   estoqueTotal?: number;
   estoqueAtual?: number;
   posicoesEstoque?: PosicaoEstoque[];
+  // Campos específicos para embalagem
+  tipoEmbalagem?: string;
+  materialEmbalagem?: string;
+  altura?: number;
+  largura?: number;
+  profundidade?: number;
+  dataCompraEmbalagem?: string;
+  custoPorUnidade?: number;
+  valorFrete?: number;
+  valorTotalPago?: number;
+  especificacoes?: any;
 }
 
 export interface GrupoDeFilamento {
@@ -272,14 +335,14 @@ export interface ProductionGroup {
     grupoFilamentoId: string;
     nome: string;
     quantidade: number;
-    estoqueAtualFilamento?: number;
+    estoqueAtual?: number;
   }[];
   outrosInsumosNecessarios: {
     id: string;
     insumoId: string;
     nome: string;
     quantidade: number;
-    estoqueAtualInsumo?: number;
+    estoqueAtual?: number;
   }[];
   tempoImpressaoGrupo: number;
   consumoFilamentoGrupo: number;
@@ -289,6 +352,15 @@ export interface ProductionGroup {
   pedidoId: string;
   pedidoNumero: string;
   timestamp: any;
+  pedidosOrigem: Array<{
+    pedidoId: string;
+    pedidoNumero: string;
+    groupId: string;
+    assemblyInstances?: Array<{
+      assemblyInstanceId: string;
+      atendimentoDetalhado?: any[];
+    }>;
+  }>;
 }
 
 export interface ProductionGroupFilamento {
@@ -359,6 +431,7 @@ export interface PackagingModelo {
   quantidade: number;
   quantidadeAtendida?: number;
   estoqueAtual?: number;
+  pecas?: PackagingPeca[];
 }
 
 export interface PackagingPeca {
@@ -437,13 +510,56 @@ export interface LancamentoProduto {
   }[];
 }
 
-export interface LancamentoServico {
-  servicoId: 'impressao_3d' | 'embalagem';
-  optimizedGroupId?: string;
+export interface UsoEstoquePayload {
+  pedidoId: string;
+  nivelUsado: number;
+  produtoRaiz: {
+    id: string;
+    tipo: 'kit' | 'modelo' | 'peca' | 'parte';
+    quantidade: number;
+  };
+  produtosConsumidos: Array<{
+    produtoId: string;
+    produtoTipo: 'kit' | 'modelo' | 'peca' | 'parte';
+    quantidade: number;
+    nivel: number;
+  }>;
+  posicoesConsumidas: Array<{
+    produtoId: string;
+    produtoTipo: 'kit' | 'modelo' | 'peca' | 'parte';
+    posicaoEstoqueId: string;
+    quantidade: number;
+  }>;
+}
+
+// Payloads específicos para cada tipo de serviço
+export interface Impressao3DPayload {
+  impressora?: string;
+  total: number; // tempo em minutos
   pedidoId?: string;
-  quantidade: number;
-  data: Timestamp;
+  optimizedGroupId?: string;
+}
+
+export interface MontagemPayload {
+  tipo: 'peça' | 'modelo' | 'kit';
+  total: number; // tempo em minutos
+  pedidoId?: string;
+  assemblyGroup?: string;
+  productId?: string;
+}
+
+export interface EmbalagemPayload {
+  total: number; // tempo em minutos
+  pedidoId?: string;
+  assemblyGroup?: string;
+}
+
+export interface LancamentoServico {
+  serviceType: "impressao_3d" | "montagem" | "embalagem";
+  origem: "pedido" | "producao" | "prototipagem" | "pessoal" | "outro";
   usuario: string;
+  data: Timestamp;
+  payload: Impressao3DPayload | MontagemPayload | EmbalagemPayload;
 }
 
 export interface FilamentSpool {

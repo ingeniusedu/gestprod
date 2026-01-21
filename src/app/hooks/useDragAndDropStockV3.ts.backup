@@ -1,0 +1,840 @@
+import { useState, useCallback, useEffect } from 'react';
+import { db } from '../services/firebase';
+import { 
+  collection, 
+  onSnapshot, 
+  query, 
+  where, 
+  doc, 
+  getDoc,
+  addDoc,
+  serverTimestamp 
+} from 'firebase/firestore';
+import { 
+  Pedido, 
+  Peca, 
+  Modelo, 
+  Kit, 
+  GrupoMontagem,
+  GrupoProducaoOtimizado,
+  UsoEstoquePayload
+} from '../types';
+
+interface StockItem {
+  id: string;
+  nome: string;
+  tipo: 'kit' | 'modelo' | 'peca' | 'parte';
+  quantidade: number;
+  produtoId: string;
+  posicoesEstoque?: any[];
+}
+
+export interface ProductHierarchyNode {
+  id: string;
+  nome: string;
+  tipo: 'kit' | 'modelo' | 'peca' | 'parte';
+  quantidadeNecessaria: number;
+  quantidadeAtendida: number;
+  estoqueAtual?: number;
+  nivel: number;
+  parentId?: string;
+  children?: ProductHierarchyNode[];
+  
+  // IDs para mapeamento direto
+  grupoProducaoId?: string;
+  grupoMontagemId?: string;
+  assemblyInstanceId?: string;
+  
+  // Contexto completo da jornada
+  pedidoId?: string;
+  parentModeloId?: string | null;
+  parentKitId?: string | null;
+  targetProductId?: string;
+  
+  // Detalhes de atendimento
+  atendimentoDetalhado?: Array<{
+    origem: string;
+    quantidade: number;
+    timestamp: any;
+  }>;
+}
+
+interface PedidoComHierarquia {
+  pedido: Pedido;
+  hierarquia: ProductHierarchyNode[];
+  gruposProducao: GrupoProducaoOtimizado[];
+  gruposMontagem: GrupoMontagem[];
+}
+
+export interface PendingOperation {
+  id: string;
+  stockItem: StockItem;
+  targetNode: ProductHierarchyNode;
+  quantity: number;
+  cascadeScope: ProductHierarchyNode[];
+  timestamp: Date;
+  pedidoId: string;
+}
+
+export const useDragAndDropStockV3 = () => {
+  const [pedidosComHierarquia, setPedidosComHierarquia] = useState<PedidoComHierarquia[]>([]);
+  const [stockItems, setStockItems] = useState<StockItem[]>([]);
+  const [selectedPedidoId, setSelectedPedidoId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [pendingOperations, setPendingOperations] = useState<PendingOperation[]>([]);
+
+  // Função para parsear assemblyInstanceId e extrair contexto
+  const parseAssemblyInstanceId = useCallback((assemblyInstanceId: string) => {
+    const parts = assemblyInstanceId.split('-');
+    
+    // Padrão: {pedidoId}-{produtoId}-{instancia}[-{produtoId}-{instancia}]...
+    const result = {
+      pedidoId: parts[0],
+      kitId: undefined as string | undefined,
+      modeloId: undefined as string | undefined,
+      pecaId: undefined as string | undefined,
+      instanceNumber: parseInt(parts[parts.length - 1]),
+      isDirectKitPiece: false,
+      isModelPiece: false,
+      journey: [] as Array<{ tipo: string; id: string; instance: number }>
+    };
+    
+    // Reconstruir jornada
+    for (let i = 0; i < parts.length; i += 2) {
+      if (i + 1 < parts.length) {
+        const productId = parts[i];
+        const instance = parseInt(parts[i + 1]);
+        
+        // Determinar tipo baseado na posição
+        let tipo = 'produto';
+        if (i === 0) {
+          tipo = 'pedido';
+        } else if (i === 2) {
+          // Segundo nível pode ser kit ou modelo
+          tipo = parts.length > 4 ? 'kit' : 'modelo';
+        } else if (i === 4) {
+          tipo = 'modelo';
+        } else if (i === 6) {
+          tipo = 'peca';
+        }
+        
+        result.journey.push({ tipo, id: productId, instance });
+      }
+    }
+    
+    // Extrair IDs específicos
+    if (result.journey.length >= 3) {
+      // Tem pelo menos: pedido -> kit -> peça
+      result.kitId = result.journey[1].id;
+      result.pecaId = result.journey[result.journey.length - 1].id;
+      result.isDirectKitPiece = result.journey.length === 3;
+      
+      if (result.journey.length === 4) {
+        // pedido -> kit -> modelo -> peça
+        result.modeloId = result.journey[2].id;
+        result.isModelPiece = true;
+      }
+    } else if (result.journey.length === 2) {
+      // pedido -> modelo -> peça
+      result.modeloId = result.journey[1].id;
+      result.pecaId = result.journey[1].id;
+      result.isModelPiece = true;
+    }
+    
+    return result;
+  }, []);
+
+  // Buscar grupos de montagem para um pedido
+  const fetchGruposMontagemParaPedido = useCallback(async (pedidoId: string): Promise<GrupoMontagem[]> => {
+    const q = query(collection(db, 'gruposMontagem'), where('pedidoId', '==', pedidoId));
+    const snapshot = await new Promise(resolve => {
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        unsubscribe();
+        resolve(snapshot);
+      });
+    });
+    
+    return (snapshot as any).docs.map((doc: any) => ({ 
+      id: doc.id, 
+      ...doc.data() 
+    } as GrupoMontagem));
+  }, []);
+
+  // Buscar grupos de produção para um pedido
+  const fetchGruposProducaoParaPedido = useCallback(async (pedidoId: string): Promise<GrupoProducaoOtimizado[]> => {
+    const q = query(
+      collection(db, 'gruposProducaoOtimizados'),
+      where('pedidoId', '==', pedidoId),
+      where('status', 'in', ['aguardando', 'em_producao'])
+    );
+    
+    const snapshot = await new Promise(resolve => {
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        unsubscribe();
+        resolve(snapshot);
+      });
+    });
+    
+    return (snapshot as any).docs.map((doc: any) => ({ 
+      id: doc.id, 
+      ...doc.data() 
+    } as GrupoProducaoOtimizado));
+  }, []);
+
+  // Construir hierarquia a partir dos grupos
+  const buildProductHierarchyFromGroups = useCallback(async (
+    pedido: Pedido,
+    gruposMontagem: GrupoMontagem[],
+    gruposProducao: GrupoProducaoOtimizado[]
+  ): Promise<ProductHierarchyNode[]> => {
+    const hierarquia: ProductHierarchyNode[] = [];
+    const nodeMap = new Map<string, ProductHierarchyNode>();
+    
+    // Processar grupos de montagem para criar nós
+    for (const grupo of gruposMontagem) {
+      if (!grupo.assemblyInstanceId) continue;
+      
+      const parsed = parseAssemblyInstanceId(grupo.assemblyInstanceId);
+      const nivel = parsed.journey.length - 1;
+      
+      // Determinar tipo e nome baseado no grupo
+      let nome = grupo.targetProductName || `Produto ${grupo.targetProductId}`;
+      let tipo = grupo.targetProductType;
+      
+      // Para grupos de embalagem, ajustar tipo
+      if (grupo.targetProductType === 'produto_final') {
+        tipo = 'kit'; // Tratar como kit para hierarquia
+        nome = `Embalagem ${pedido.numero}`;
+      }
+      
+      const node: ProductHierarchyNode = {
+        id: grupo.assemblyInstanceId,
+        nome,
+        tipo: tipo as 'kit' | 'modelo' | 'peca' | 'parte',
+        quantidadeNecessaria: 1, // Cada assemblyInstance representa 1 unidade
+        quantidadeAtendida: calcularQuantidadeAtendida(grupo),
+        nivel,
+        grupoMontagemId: grupo.id,
+        assemblyInstanceId: grupo.assemblyInstanceId,
+        pedidoId: grupo.pedidoId || pedido.id,
+        parentModeloId: grupo.parentModeloId || null,
+        parentKitId: grupo.parentKitId || null,
+        targetProductId: grupo.targetProductId,
+        atendimentoDetalhado: extrairAtendimentoDetalhado(grupo)
+      };
+      
+      nodeMap.set(grupo.assemblyInstanceId, node);
+      
+      // Se for nó raiz (nível 1), adicionar à hierarquia
+      if (nivel === 1) {
+        hierarquia.push(node);
+      }
+    }
+    
+    // Construir relações pai-filho baseado na jornada
+    for (const node of nodeMap.values()) {
+      if (!node.assemblyInstanceId) continue;
+      
+      const parsed = parseAssemblyInstanceId(node.assemblyInstanceId);
+      if (parsed.journey.length > 2) {
+        // Encontrar pai na jornada (penúltimo elemento)
+        const parentJourney = parsed.journey[parsed.journey.length - 2];
+        const parentId = `${parsed.pedidoId}-${parentJourney.id}-${parentJourney.instance}`;
+        
+        const parentNode = nodeMap.get(parentId);
+        if (parentNode) {
+          node.parentId = parentNode.id;
+          if (!parentNode.children) {
+            parentNode.children = [];
+          }
+          parentNode.children.push(node);
+        }
+      }
+    }
+    
+    // Adicionar partes dos grupos de produção
+    for (const grupoProducao of gruposProducao) {
+      // Encontrar nó correspondente
+      const targetNode = Array.from(nodeMap.values()).find(node => 
+        node.targetProductId === grupoProducao.sourceId &&
+        node.tipo === 'peca'
+      );
+      
+      if (targetNode && grupoProducao.partesNoGrupo) {
+        // Adicionar partes como filhos
+        const partesNodes: ProductHierarchyNode[] = Object.entries(grupoProducao.partesNoGrupo).map(([parteId, parteInfo]) => ({
+          id: `${targetNode.id}-parte-${parteId}`,
+          nome: parteInfo.nome || `Parte ${parteId}`,
+          tipo: 'parte',
+          quantidadeNecessaria: parteInfo.quantidade,
+          quantidadeAtendida: 0, // Será calculado com base no atendimento
+          nivel: targetNode.nivel + 1,
+          parentId: targetNode.id,
+          grupoProducaoId: grupoProducao.id,
+          targetProductId: parteId
+        }));
+        
+        if (targetNode.children) {
+          targetNode.children.push(...partesNodes);
+        } else {
+          targetNode.children = partesNodes;
+        }
+      }
+    }
+    
+    return hierarquia;
+  }, [parseAssemblyInstanceId]);
+
+  // Calcular quantidade atendida de um grupo de montagem
+  const calcularQuantidadeAtendida = useCallback((grupo: GrupoMontagem): number => {
+    if (grupo.pecasNecessarias) {
+      return grupo.pecasNecessarias.reduce((sum, peca) => {
+        const totalAtendido = (peca as any).atendimentoDetalhado?.reduce(
+          (atendSum: number, item: any) => atendSum + item.quantidade, 0
+        ) || 0;
+        return sum + totalAtendido;
+      }, 0);
+    } else if (grupo.modelosNecessarios) {
+      return grupo.modelosNecessarios.reduce((sum, modelo) => {
+        const totalAtendido = (modelo as any).atendimentoDetalhado?.reduce(
+          (atendSum: number, item: any) => atendSum + item.quantidade, 0
+        ) || 0;
+        return sum + totalAtendido;
+      }, 0);
+    } else if (grupo.produtosFinaisNecessarios) {
+      return grupo.produtosFinaisNecessarios.reduce((sum, produto) => {
+        const totalAtendido = (produto as any).atendimentoDetalhado?.reduce(
+          (atendSum: number, item: any) => atendSum + item.quantidade, 0
+        ) || 0;
+        return sum + totalAtendido;
+      }, 0);
+    }
+    return 0;
+  }, []);
+
+  // Extrair atendimento detalhado de um grupo de montagem
+  const extrairAtendimentoDetalhado = useCallback((grupo: GrupoMontagem): Array<{ origem: string; quantidade: number; timestamp: any }> => {
+    const atendimentos: Array<{ origem: string; quantidade: number; timestamp: any }> = [];
+    
+    if (grupo.pecasNecessarias) {
+      grupo.pecasNecessarias.forEach(peca => {
+        if ((peca as any).atendimentoDetalhado) {
+          atendimentos.push(...(peca as any).atendimentoDetalhado);
+        }
+      });
+    }
+    
+    if (grupo.modelosNecessarios) {
+      grupo.modelosNecessarios.forEach(modelo => {
+        if ((modelo as any).atendimentoDetalhado) {
+          atendimentos.push(...(modelo as any).atendimentoDetalhado);
+        }
+      });
+    }
+    
+    if (grupo.produtosFinaisNecessarios) {
+      grupo.produtosFinaisNecessarios.forEach(produto => {
+        if ((produto as any).atendimentoDetalhado) {
+          atendimentos.push(...(produto as any).atendimentoDetalhado);
+        }
+      });
+    }
+    
+    return atendimentos;
+  }, []);
+
+  // Buscar todos os dados necessários
+  useEffect(() => {
+    const unsubscribePedidos = onSnapshot(collection(db, 'pedidos'), async (snapshot) => {
+      const pedidos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Pedido));
+      
+      const resultados = await Promise.all(
+        pedidos.map(async (pedido) => {
+          const [gruposMontagem, gruposProducao] = await Promise.all([
+            fetchGruposMontagemParaPedido(pedido.id),
+            fetchGruposProducaoParaPedido(pedido.id)
+          ]);
+          
+          const hierarquia = await buildProductHierarchyFromGroups(pedido, gruposMontagem, gruposProducao);
+          
+          return {
+            pedido,
+            hierarquia,
+            gruposProducao,
+            gruposMontagem
+          };
+        })
+      );
+      
+      setPedidosComHierarquia(resultados);
+      setIsLoading(false);
+    });
+
+    const unsubscribePecas = onSnapshot(collection(db, 'pecas'), (snapshot) => {
+      const pecas = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Peca));
+      processarEstoque(pecas, null, null);
+    });
+
+    const unsubscribeModelos = onSnapshot(collection(db, 'modelos'), (snapshot) => {
+      const modelos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Modelo));
+      processarEstoque(null, modelos, null);
+    });
+
+    const unsubscribeKits = onSnapshot(collection(db, 'kits'), (snapshot) => {
+      const kits = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Kit));
+      processarEstoque(null, null, kits);
+    });
+
+    return () => {
+      unsubscribePedidos();
+      unsubscribePecas();
+      unsubscribeModelos();
+      unsubscribeKits();
+    };
+  }, [fetchGruposMontagemParaPedido, fetchGruposProducaoParaPedido, buildProductHierarchyFromGroups]);
+
+  // Processar estoque disponível
+  const processarEstoque = (
+    pecas: Peca[] | null,
+    modelos: Modelo[] | null,
+    kits: Kit[] | null
+  ) => {
+    const stock: StockItem[] = [];
+
+    if (kits) {
+      kits.forEach(kit => {
+        const estoque = kit.estoqueTotal || (kit.posicoesEstoque?.reduce((sum, pos) => sum + pos.quantidade, 0) || 0);
+        if (estoque > 0) {
+          stock.push({
+            id: kit.id,
+            nome: kit.nome,
+            tipo: 'kit',
+            quantidade: estoque,
+            produtoId: kit.id,
+            posicoesEstoque: kit.posicoesEstoque
+          });
+        }
+      });
+    }
+
+    if (modelos) {
+      modelos.forEach(modelo => {
+        const estoque = modelo.estoqueTotal || (modelo.posicoesEstoque?.reduce((sum, pos) => sum + pos.quantidade, 0) || 0);
+        if (estoque > 0) {
+          stock.push({
+            id: modelo.id,
+            nome: modelo.nome,
+            tipo: 'modelo',
+            quantidade: estoque,
+            produtoId: modelo.id,
+            posicoesEstoque: modelo.posicoesEstoque
+          });
+        }
+      });
+    }
+
+    if (pecas) {
+      pecas.forEach(peca => {
+        const estoque = peca.estoqueTotal || (peca.posicoesEstoque?.reduce((sum, pos) => sum + pos.quantidade, 0) || 0);
+        if (estoque > 0) {
+          stock.push({
+            id: peca.id,
+            nome: peca.nome,
+            tipo: 'peca',
+            quantidade: estoque,
+            produtoId: peca.id,
+            posicoesEstoque: peca.posicoesEstoque
+          });
+        }
+      });
+    }
+
+        setStockItems(prev => {
+      const newStock = [...prev];
+      stock.forEach(item => {
+        const index = newStock.findIndex(s => s.id === item.id);
+        if (index >= 0) {
+          newStock[index] = item;
+        } else {
+          newStock.push(item);
+        }
+      });
+      return newStock;
+    });
+  };
+
+  // Filtrar estoque para o pedido selecionado
+  const getStockForSelectedPedido = useCallback((): StockItem[] => {
+    if (!selectedPedidoId) return stockItems;
+    
+    const pedidoSelecionado = pedidosComHierarquia.find(p => p.pedido.id === selectedPedidoId);
+    if (!pedidoSelecionado) return stockItems;
+
+    // Coletar todos os IDs reais dos produtos necessários no pedido
+    const idsNecessarios = new Set<string>();
+    const coletarIds = (nodes: ProductHierarchyNode[]) => {
+      nodes.forEach(node => {
+        if (node.targetProductId) {
+          idsNecessarios.add(node.targetProductId);
+        }
+        
+        if (node.children) {
+          coletarIds(node.children);
+        }
+      });
+    };
+    
+    coletarIds(pedidoSelecionado.hierarquia);
+    
+    // Filtrar estoque para mostrar apenas itens com IDs que correspondem aos necessários
+    return stockItems.filter(item => idsNecessarios.has(item.produtoId));
+  }, [selectedPedidoId, pedidosComHierarquia, stockItems]);
+
+  // Obter pedido selecionado
+  const getPedidoSelecionado = useCallback(() => {
+    return pedidosComHierarquia.find(p => p.pedido.id === selectedPedidoId);
+  }, [selectedPedidoId, pedidosComHierarquia]);
+
+  // Calcular escopo de cascata baseado no documento planejamento_estoque.md
+  const calculateCascadeScope = useCallback((
+    stockItem: StockItem,
+    targetNode: ProductHierarchyNode
+  ): ProductHierarchyNode[] => {
+    const scope: ProductHierarchyNode[] = [targetNode];
+
+    // Função para coletar todos os descendentes de um nó
+    const coletarTodosDescendentes = (node: ProductHierarchyNode) => {
+      if (node.children) {
+        node.children.forEach(child => {
+          scope.push(child);
+          coletarTodosDescendentes(child);
+        });
+      }
+    };
+
+    // Função para coletar apenas peças (nível imediatamente abaixo)
+    const coletarApenasPecas = (node: ProductHierarchyNode) => {
+      if (node.children) {
+        node.children.forEach(child => {
+          if (child.tipo === 'peca') {
+            scope.push(child);
+            // Incluir partes das peças também
+            if (child.children) {
+              child.children.forEach(parte => {
+                if (parte.tipo === 'parte') {
+                  scope.push(parte);
+                }
+              });
+            }
+          }
+        });
+      }
+    };
+
+    // Função para coletar apenas partes (nível mais baixo)
+    const coletarApenasPartes = (node: ProductHierarchyNode) => {
+      if (node.children) {
+        node.children.forEach(child => {
+          if (child.tipo === 'parte') {
+            scope.push(child);
+          }
+        });
+      }
+    };
+
+    // Lógica de cascata baseada no tipo do estoque e nó alvo
+    switch (stockItem.tipo) {
+      case 'kit':
+        if (targetNode.tipo === 'kit') {
+          // FLUXO 1: Atendimento por Kit - inclui todos os descendentes
+          coletarTodosDescendentes(targetNode);
+        }
+        break;
+        
+      case 'modelo':
+        if (targetNode.tipo === 'modelo') {
+          // FLUXO 2: Atendimento por Modelo - inclui apenas peças e suas partes
+          coletarApenasPecas(targetNode);
+        }
+        break;
+        
+      case 'peca':
+        if (targetNode.tipo === 'peca') {
+          // FLUXO 3: Atendimento por Peça - inclui apenas partes da peça
+          coletarApenasPartes(targetNode);
+        }
+        break;
+        
+      case 'parte':
+        // FLUXO 6: Atendimento por Parte (não suportado)
+        // Apenas a parte específica (já incluída no scope)
+        break;
+    }
+
+    return scope;
+  }, []);
+
+  // Validar se o estoque é compatível com o nó alvo
+  const validateStockCompatibility = useCallback((
+    stockItem: StockItem,
+    targetNode: ProductHierarchyNode
+  ): { isValid: boolean; message: string } => {
+    // Verificar se os tipos são compatíveis
+    if (stockItem.tipo !== targetNode.tipo) {
+      return { 
+        isValid: false, 
+        message: `Tipo incompatível: Estoque é ${stockItem.tipo}, mas o alvo é ${targetNode.tipo}` 
+      };
+    }
+
+    // Verificar se os IDs são iguais (mesmo produto)
+    if (stockItem.produtoId !== targetNode.targetProductId) {
+      return { 
+        isValid: false, 
+        message: `Produto diferente: Estoque é ${stockItem.nome} (ID: ${stockItem.produtoId}), mas o alvo é ${targetNode.nome} (ID: ${targetNode.targetProductId})` 
+      };
+    }
+
+    // Verificar se há quantidade disponível
+    if (stockItem.quantidade <= 0) {
+      return { 
+        isValid: false, 
+        message: `Estoque insuficiente: ${stockItem.nome} tem 0 unidades disponíveis` 
+      };
+    }
+
+    // Verificar se o nó ainda precisa de atendimento
+    const quantidadeNecessaria = targetNode.quantidadeNecessaria - targetNode.quantidadeAtendida;
+    if (quantidadeNecessaria <= 0) {
+      return { 
+        isValid: false, 
+        message: `Nó já totalmente atendido: ${targetNode.nome} já tem ${targetNode.quantidadeAtendida}/${targetNode.quantidadeNecessaria} unidades` 
+      };
+    }
+
+    return { isValid: true, message: 'Compatível' };
+  }, []);
+
+  // Adicionar operação pendente
+  const addPendingOperation = useCallback((
+    stockItem: StockItem,
+    targetNode: ProductHierarchyNode,
+    pedidoId: string
+  ) => {
+    // Validar compatibilidade
+    const validation = validateStockCompatibility(stockItem, targetNode);
+    if (!validation.isValid) {
+      throw new Error(validation.message);
+    }
+
+    const cascadeScope = calculateCascadeScope(stockItem, targetNode);
+    const quantidadeNecessaria = targetNode.quantidadeNecessaria - targetNode.quantidadeAtendida;
+    const quantidadeDisponivel = stockItem.quantidade;
+    const quantidadeAplicar = Math.min(quantidadeDisponivel, quantidadeNecessaria);
+    
+    const operation: PendingOperation = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      stockItem,
+      targetNode,
+      quantity: quantidadeAplicar,
+      cascadeScope,
+      timestamp: new Date(),
+      pedidoId
+    };
+    
+    setPendingOperations(prev => [...prev, operation]);
+    
+    return operation;
+  }, [calculateCascadeScope, validateStockCompatibility]);
+
+  // Remover operação pendente
+  const removePendingOperation = useCallback((operationId: string) => {
+    setPendingOperations(prev => prev.filter(op => op.id !== operationId));
+  }, []);
+
+  // Limpar todas as operações pendentes
+  const clearPendingOperations = useCallback(() => {
+    setPendingOperations([]);
+  }, []);
+
+  // Confirmar uso de estoque com suporte a cascata
+  const confirmStockUsage = useCallback(async (pedidoId: string) => {
+    if (pendingOperations.length === 0) {
+      return { success: false, message: 'Nenhuma operação pendente' };
+    }
+
+    try {
+      // Filtrar operações apenas para este pedido
+      const operacoesDoPedido = pendingOperations.filter(op => op.pedidoId === pedidoId);
+      if (operacoesDoPedido.length === 0) {
+        return { success: false, message: 'Nenhuma operação pendente para este pedido' };
+      }
+      
+      // Construir payload de uso de estoque com suporte a cascata
+      const payload: UsoEstoquePayload & {
+        contextoExtra?: Array<{
+          parentModeloId: string | null;
+          parentKitId: string | null;
+          assemblyInstanceId: string | null;
+          grupoMontagemId: string | null;
+          cascadeScope: Array<{
+            id: string;
+            tipo: string;
+            assemblyInstanceId?: string;
+            grupoMontagemId?: string;
+            grupoProducaoId?: string;
+          }>;
+        }>;
+      } = {
+        pedidoId,
+        nivelUsado: 0,
+        produtoRaiz: {
+          id: '',
+          tipo: 'kit',
+          quantidade: 0
+        },
+        produtosConsumidos: [],
+        posicoesConsumidas: []
+      };
+      
+      // Processar cada operação e seus nós de cascata
+      for (const operation of operacoesDoPedido) {
+        const { stockItem, targetNode, quantity, cascadeScope } = operation;
+        
+        // Adicionar produto raiz (primeira operação define o produto raiz)
+        if (payload.produtoRaiz.id === '') {
+          payload.produtoRaiz = {
+            id: targetNode.targetProductId || '',
+            tipo: stockItem.tipo,
+            quantidade: quantity
+          };
+          payload.nivelUsado = targetNode.nivel;
+        }
+        
+        // Adicionar produto principal consumido
+        payload.produtosConsumidos.push({
+          produtoId: targetNode.targetProductId || '',
+          produtoTipo: stockItem.tipo,
+          quantidade: quantity,
+          nivel: targetNode.nivel
+        });
+        
+        // Adicionar nós de cascata como produtos consumidos adicionais
+        // (exceto o nó principal que já foi adicionado)
+        const cascadeNodes = cascadeScope.filter(node => node.id !== targetNode.id);
+        for (const cascadeNode of cascadeNodes) {
+          // Para nós de cascata, usamos o tipo original do nó
+          payload.produtosConsumidos.push({
+            produtoId: cascadeNode.targetProductId || '',
+            produtoTipo: cascadeNode.tipo,
+            quantidade: quantity,
+            nivel: cascadeNode.nivel
+          });
+        }
+        
+        // Para o handler handleUsoEstoque, precisamos passar contexto adicional
+        const contextoExtra = {
+          parentModeloId: targetNode.parentModeloId || null,
+          parentKitId: targetNode.parentKitId || null,
+          assemblyInstanceId: targetNode.assemblyInstanceId || null,
+          grupoMontagemId: targetNode.grupoMontagemId || null,
+          cascadeScope: cascadeScope.map(node => ({
+            id: node.id,
+            tipo: node.tipo,
+            assemblyInstanceId: node.assemblyInstanceId,
+            grupoMontagemId: node.grupoMontagemId,
+            grupoProducaoId: node.grupoProducaoId
+          }))
+        };
+        
+        // Adicionar contexto extra como propriedade adicional no payload
+        if (!payload.contextoExtra) {
+          payload.contextoExtra = [];
+        }
+        payload.contextoExtra.push(contextoExtra);
+        
+        // Adicionar posições de estoque consumidas
+        if (stockItem.posicoesEstoque && stockItem.posicoesEstoque.length > 0) {
+          const posicao = stockItem.posicoesEstoque[0];
+          payload.posicoesConsumidas.push({
+            produtoId: targetNode.targetProductId || '',
+            produtoTipo: stockItem.tipo,
+            posicaoEstoqueId: posicao.recipienteId || posicao.localId || 'desconhecido',
+            quantidade: quantity
+          });
+        } else {
+          payload.posicoesConsumidas.push({
+            produtoId: targetNode.targetProductId || '',
+            produtoTipo: stockItem.tipo,
+            posicaoEstoqueId: 'estoque-geral',
+            quantidade: quantity
+          });
+        }
+      }
+      
+      // Criar LancamentoProducao
+      const lancamentoProducaoRef = await addDoc(collection(db, 'lancamentosProducao'), {
+        tipoEvento: 'uso_estoque',
+        timestamp: serverTimestamp(),
+        usuarioId: 'usuario-sistema',
+        payload: payload,
+        status: 'pendente',
+        // Adicionar metadados para cascata
+        metadata: {
+          temCascata: operacoesDoPedido.some(op => op.cascadeScope.length > 1),
+          niveisAfetados: Array.from(new Set(operacoesDoPedido.flatMap(op => 
+            op.cascadeScope.map(node => node.nivel)
+          ))),
+          tiposProdutos: Array.from(new Set(operacoesDoPedido.flatMap(op => 
+            op.cascadeScope.map(node => node.tipo)
+          )))
+        }
+      });
+      
+      // Limpar apenas as operações deste pedido
+      setPendingOperations(prev => prev.filter(op => op.pedidoId !== pedidoId));
+      
+      return { 
+        success: true, 
+        message: `${operacoesDoPedido.length} operações confirmadas (incluindo cascata) e enviadas para processamento`,
+        lancamentoId: lancamentoProducaoRef.id
+      };
+    } catch (error) {
+      console.error('Erro ao confirmar uso de estoque:', error);
+      return { success: false, message: 'Erro ao processar operações: ' + (error as Error).message };
+    }
+  }, [pendingOperations]);
+
+  // Manipular drop (adiciona à lista de pendentes)
+  const handleDrop = useCallback((
+    stockItem: StockItem,
+    targetNode: ProductHierarchyNode,
+    pedidoId: string
+  ) => {
+    const operation = addPendingOperation(stockItem, targetNode, pedidoId);
+    return operation;
+  }, [addPendingOperation]);
+
+  return {
+    // Dados
+    pedidosComHierarquia,
+    stockItems,
+    selectedPedidoId,
+    isLoading,
+    pendingOperations,
+    
+    // Ações
+    setSelectedPedidoId,
+    getStockForSelectedPedido,
+    calculateCascadeScope,
+    handleDrop,
+    removePendingOperation,
+    clearPendingOperations,
+    confirmStockUsage,
+    
+    // Utilitários
+    getPedidoSelecionado,
+    parseAssemblyInstanceId,
+    buildProductHierarchyFromGroups
+  };
+};

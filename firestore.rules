@@ -53,7 +53,7 @@ service cloud.firestore {
     // Permite que usuários autenticados criem lançamentos de serviço
     match /lancamentosServicos/{lancamentoId} {
       allow create: if request.auth != null;
-      allow read, write: if false; // Apenas a função pode alterar/ler
+      allow read, write: if request.auth != null; // Permitir operações via batch para usuários autenticados
     }
 
     // A coleção de relatórios só pode ser lida pelos clientes (e escrita pelas funções)

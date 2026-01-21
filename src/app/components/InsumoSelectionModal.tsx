@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, Search } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../services/firebase';
@@ -9,7 +9,7 @@ import { Insumo } from '../types';
 interface InsumoSelectionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelect: (insumo: Insumo, quantidade: number) => void;
+  onSelect: (selectedInsumos: { insumo: Insumo, quantidade: number }[]) => void;
   initialSelectedInsumos?: { insumo: Insumo, quantidade: number }[];
   insumoTipoFilter?: string | null;
 }
@@ -27,12 +27,15 @@ export default function InsumoSelectionModal({
   const [filterEmbalagem, setFilterEmbalagem] = useState(insumoTipoFilter === 'embalagem');
   const [filterMaterial, setFilterMaterial] = useState(insumoTipoFilter === 'material');
 
+  // Memoize initialSelectedInsumos to prevent infinite re-renders
+  const memoizedInitialSelectedInsumos = useMemo(() => initialSelectedInsumos, [initialSelectedInsumos]);
+
   useEffect(() => {
     if (isOpen) {
       const fetchInsumos = async () => {
         const insumosCollection = collection(db, 'insumos');
         const insumosSnapshot = await getDocs(insumosCollection);
-        let insumosList = insumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Insumo)).filter(insumo => insumo.tipo !== 'filamento');
+        let insumosList = insumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Insumo));
         
         if (insumoTipoFilter) {
           insumosList = insumosList.filter(insumo => insumo.tipo === insumoTipoFilter);
@@ -43,10 +46,10 @@ export default function InsumoSelectionModal({
       fetchInsumos();
 
       const initialMap = new Map<string, { insumo: Insumo, quantidade: number }>();
-      initialSelectedInsumos.forEach(item => initialMap.set(item.insumo.id, { insumo: item.insumo, quantidade: item.quantidade }));
+      memoizedInitialSelectedInsumos.forEach(item => initialMap.set(item.insumo.id, { insumo: item.insumo, quantidade: item.quantidade }));
       setSelectedInsumos(initialMap);
     }
-  }, [isOpen, initialSelectedInsumos, insumoTipoFilter]);
+  }, [isOpen, memoizedInitialSelectedInsumos, insumoTipoFilter]);
 
   const handleToggleInsumo = (insumo: Insumo) => {
     setSelectedInsumos(prev => {
@@ -76,29 +79,17 @@ export default function InsumoSelectionModal({
 
   const handleConfirmSelection = () => {
     const selectedArray = Array.from(selectedInsumos.values());
-    if (selectedArray.length === 1) {
-      const singleSelection = selectedArray[0];
-      onSelect(singleSelection.insumo, singleSelection.quantidade);
-    } else {
-      // This case needs to be handled based on how you want to support multiple selections.
-      // For now, it will only work correctly for a single selection as per the onSelect signature.
-      // If multiple selections are needed, the onSelect prop type should be updated.
-      if (selectedArray.length > 0) {
-        const firstSelection = selectedArray[0];
-        onSelect(firstSelection.insumo, firstSelection.quantidade);
-      }
-    }
+    onSelect(selectedArray);
     onClose();
   };
 
   const filteredInsumos = insumos.filter(insumo => {
     const searchMatch = insumo.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (insumo.tipo && insumo.tipo.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (insumo.unidade && insumo.unidade.toLowerCase().includes(searchTerm.toLowerCase()));
+      (insumo.tipo && insumo.tipo.toLowerCase().includes(searchTerm.toLowerCase()));
 
     const typeMatch = (!filterEmbalagem && !filterMaterial) ||
-      (filterEmbalagem && insumo.tipo === 'embalagem') ||
-      (filterMaterial && insumo.tipo === 'material');
+      (filterMaterial && insumo.tipo === 'material') ||
+      (filterEmbalagem && insumo.tipo === 'embalagem');
 
     return searchMatch && typeMatch;
   });
@@ -172,7 +163,7 @@ export default function InsumoSelectionModal({
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{insumo.nome}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{insumo.tipo}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{insumo.unidade}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">-</td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <input
                       type="number"

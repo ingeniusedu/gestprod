@@ -319,7 +319,7 @@ export async function handleConclusaoProducao(event: { data?: DocumentSnapshot }
                             tipoInsumo: insumo.tipo,
                             tipoMovimento: 'saida',
                             quantidade: quantidadeInsumo,
-                            unidadeMedida: insumo.tipo === 'tempo' ? 'horas' : 'unidades',
+                            unidadeMedida: 'unidades', // Removed 'tempo' check - tempo is now a service, not an insumo
                             data: admin.firestore.Timestamp.now(),
                             detalhes: `Consumo para grupo de impressão otimizado: ${optimizedGroup.sourceName} (ID: ${optimizedGroup.id})`,
                             locais: locaisParaLancamento, // Use the determined locaisParaLancamento
@@ -334,13 +334,15 @@ export async function handleConclusaoProducao(event: { data?: DocumentSnapshot }
             // Lançar tempo de serviço (impressao_3d)
             if (optimizedGroup.tempoImpressaoGrupo > 0) {
                 newLancamentosServicos.push({
-                    servicoId: 'impressao_3d',
-                    optimizedGroupId: optimizedGroup.id,
-                    quantidade: optimizedGroup.tempoImpressaoGrupo / 60, // Converter minutos para horas
+                    serviceType: 'impressao_3d',
+                    origem: 'pedido', // conforme novo padrão
+                    usuario: lancamento.usuarioId,
                     data: admin.firestore.Timestamp.now(),
-                    usuario: lancamento.usuarioId, // Use usuarioId from the main lancamento
-                    pedidoId: pedidoIdForContext,
-                    origem: 'producao', // Added origem field
+                    payload: {
+                        total: optimizedGroup.tempoImpressaoGrupo, // tempo em minutos
+                        pedidoId: pedidoIdForContext,
+                        optimizedGroupId: optimizedGroup.id
+                    }
                 });
             }
 

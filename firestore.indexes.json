@@ -75,6 +75,104 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "pecas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "gruposImpressao.filamentos.grupoFilamentoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pecas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "gruposImpressao.outrosInsumos.insumoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "modelos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "pecas.pecaId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "modelos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "insumosAdicionais.insumoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "kits",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "modelos.modeloId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "kits",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "componentes",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "kits",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "insumosAdicionais.insumoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

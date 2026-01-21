@@ -5,7 +5,6 @@ import {
     LancamentoProducao,
     GrupoMontagem,
     AtendimentoDetalhado,
-    EntradaKitEmbalagemPayload,
 } from '../../types/productionTypes';
 import { DocumentSnapshot } from 'firebase-functions/v1/firestore';
 
@@ -33,31 +32,50 @@ export const handleEntradaModeloMontagemKit = async (event: { data?: DocumentSna
 
     try {
         await db.runTransaction(async (transaction) => {
-            // 1. Buscar GrupoMontagem do Kit Pai
-            // O assemblyInstanceId do payload é do modelo, precisamos derivar o do kit pai.
+            // 1. Extrair assemblyInstanceId do kit pai
             const modelAssemblyInstanceId = payload.assemblyInstanceId;
             const modeloId = payload.modeloId;
-            // Extrai o assemblyInstanceId do kit pai do assemblyInstanceId do modelo
-            // Ex: "pedidoId-kitId-1-modeloId-1" -> "pedidoId-kitId-1"
             const parentKitAssemblyInstanceId = modelAssemblyInstanceId.substring(0, modelAssemblyInstanceId.indexOf(`-${modeloId}-`));
 
-            const grupoMontagemKitRef = db.collection('gruposMontagem')
-                .where('assemblyInstanceId', '==', parentKitAssemblyInstanceId) // Usar o assemblyInstanceId do kit pai
-                .where('targetProductId', '==', payload.parentKitId)
-                .where('targetProductType', '==', 'kit')
-                .limit(1);
+            // 2. Buscar grupo de embalagem para atualizar modelo
+            // Quando modelo entra no kit, precisamos atualizar o modelo na embalagem
+            const pedidoId = parentKitAssemblyInstanceId.split('-')[0];
+            let grupoMontagemEmbalagemDoc = null;
+            let grupoMontagemEmbalagem = null;
 
-            const grupoMontagemKitSnapshot = await transaction.get(grupoMontagemKitRef);
+            if (pedidoId) {
+                const packagingAssemblyInstanceId = `${pedidoId}-embalagem-final`;
+                const grupoMontagemEmbalagemQuery = await transaction.get(
+                    db.collection('gruposMontagem')
+                        .where('assemblyInstanceId', '==', packagingAssemblyInstanceId)
+                        .where('targetProductType', '==', 'produto_final')
+                        .limit(1)
+                );
 
-            if (grupoMontagemKitSnapshot.empty) {
+                if (!grupoMontagemEmbalagemQuery.empty) {
+                    grupoMontagemEmbalagemDoc = grupoMontagemEmbalagemQuery.docs[0];
+                    grupoMontagemEmbalagem = grupoMontagemEmbalagemDoc.data() as GrupoMontagem;
+                }
+            }
+
+            // 3. Buscar GrupoMontagem do Kit Pai
+            const grupoMontagemKitQuery = await transaction.get(
+                db.collection('gruposMontagem')
+                    .where('assemblyInstanceId', '==', parentKitAssemblyInstanceId)
+                    .where('targetProductId', '==', payload.parentKitId)
+                    .where('targetProductType', '==', 'kit')
+                    .limit(1)
+            );
+
+            if (grupoMontagemKitQuery.empty) {
                 console.warn(`GrupoMontagem de kit não encontrado para assemblyInstanceId: ${payload.assemblyInstanceId}, parentKitId: ${payload.parentKitId}`);
                 return;
             }
 
-            const grupoMontagemKitDoc = grupoMontagemKitSnapshot.docs[0];
+            const grupoMontagemKitDoc = grupoMontagemKitQuery.docs[0];
             const grupoMontagemKit = grupoMontagemKitDoc.data() as GrupoMontagem;
 
-            // 2. Atualizar modelosNecessarios
+            // 4. Atualizar modelosNecessarios
             const modelosNecessarios = grupoMontagemKit.modelosNecessarios || [];
             const modeloNecessarioIndex = modelosNecessarios.findIndex(
                 (mn) => mn.modeloId === payload.modeloId
@@ -74,14 +92,13 @@ export const handleEntradaModeloMontagemKit = async (event: { data?: DocumentSna
             atendimentoDetalhado.push({
                 origem: 'montagem_modelo',
                 quantidade: payload.quantidade,
-                timestamp: admin.firestore.Timestamp.now(), // Usar Timestamp.now() para campos dentro de arrays
+                timestamp: admin.firestore.Timestamp.now(),
             });
 
             modeloNecessario.atendimentoDetalhado = atendimentoDetalhado;
-
             modelosNecessarios[modeloNecessarioIndex] = modeloNecessario;
 
-            // 3. Verificar Conclusão do Kit (TODO)
+            // 5. Verificar Conclusão do Kit
             let allComponentsAttended = true;
 
             // Verificar pecasNecessarias
@@ -114,24 +131,45 @@ export const handleEntradaModeloMontagemKit = async (event: { data?: DocumentSna
                 updatedGrupoMontagemKit.status = 'pronto_para_montagem';
                 updatedGrupoMontagemKit.timestampConclusao = admin.firestore.FieldValue.serverTimestamp();
 
-                // Gerar novo LancamentoProducao para ENTRADA_KIT_EMBALAGEM
-                const entradaKitEmbalagemPayload: EntradaKitEmbalagemPayload = {
-                    assemblyInstanceId: grupoMontagemKit.assemblyInstanceId,
-                    kitId: grupoMontagemKit.targetProductId,
-                    quantidade: 1, // Sempre 1 para uma instância de kit
-                    // locaisDestino: [] // TODO: Definir locais de destino se aplicável
-                };
-
-                const newLancamentoProducaoRef = db.collection('lancamentosProducao').doc();
-                transaction.set(newLancamentoProducaoRef, {
-                    id: newLancamentoProducaoRef.id,
-                    tipoEvento: LancamentoProducaoTipoEvento.ENTRADA_KIT_EMBALAGEM,
-                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                    usuarioId: lancamento.usuarioId, // Reutiliza o usuário do evento original
-                    payload: entradaKitEmbalagemPayload,
-                });
+                // NÃO gerar automaticamente ENTRADA_KIT_EMBALAGEM
+                // Isso deve ser feito apenas quando o usuário concluir a montagem do kit
+                // através do handleConclusaoMontagemKit.ts
+                console.log(`[DEBUG] Kit pronto para montagem - aguardando conclusão manual do usuário`);
             }
 
+            // 6. Atualizar grupo de embalagem com o modelo concluído
+            // Conforme a regra: "entrou modelo, atualiza modelo"
+            if (pedidoId && grupoMontagemEmbalagemDoc && grupoMontagemEmbalagem) {
+                const updatedProdutosFinaisNecessarios = (grupoMontagemEmbalagem.produtosFinaisNecessarios || []).map((produto: any) => {
+                    if (produto.produtoId === payload.parentKitId && produto.tipo === 'kit') {
+                        const updatedModelos = (produto.modelos || []).map((modelo: any) => {
+                            if (modelo.modeloId === payload.modeloId) {
+                                const newQuantidadeAtendida = (modelo.quantidadeAtendida || 0) + payload.quantidade;
+                                
+                                return {
+                                    ...modelo,
+                                    quantidadeAtendida: newQuantidadeAtendida
+                                };
+                            }
+                            return modelo;
+                        });
+
+                        return {
+                            ...produto,
+                            modelos: updatedModelos
+                        };
+                    }
+                    return produto;
+                });
+
+                transaction.update(grupoMontagemEmbalagemDoc.ref, {
+                    produtosFinaisNecessarios: updatedProdutosFinaisNecessarios
+                });
+                
+                console.log(`[DEBUG] Modelo ${payload.modeloId} atualizado na embalagem - quantidade: ${payload.quantidade}`);
+            }
+
+            // 7. Todas as escritas (writes)
             transaction.update(grupoMontagemKitDoc.ref, updatedGrupoMontagemKit);
         });
     } catch (error) {

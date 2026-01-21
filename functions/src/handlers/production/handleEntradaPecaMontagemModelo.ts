@@ -27,6 +27,7 @@ export const handleEntradaPecaMontagemModelo = async (
 
   try {
     await db.runTransaction(async (transaction) => {
+      // 1. Buscar grupo de montagem do modelo
       const grupoMontagemRef = db
         .collection('gruposMontagem')
         .where('assemblyInstanceId', '==', assemblyInstanceId)
@@ -44,6 +45,27 @@ export const handleEntradaPecaMontagemModelo = async (
 
       const grupoMontagemDoc = grupoMontagemSnapshot.docs[0];
       const grupoMontagem = grupoMontagemDoc.data() as GrupoMontagem;
+
+      // 2. Buscar grupo de embalagem antecipadamente
+      const pedidoId = assemblyInstanceId.split('-')[0];
+      let grupoMontagemEmbalagemDoc = null;
+      let grupoMontagemEmbalagem = null;
+
+      if (pedidoId) {
+        const packagingAssemblyInstanceId = `${pedidoId}-embalagem-final`;
+        
+        const grupoMontagemEmbalagemQuery = await transaction.get(
+          db.collection('gruposMontagem')
+              .where('assemblyInstanceId', '==', packagingAssemblyInstanceId)
+              .where('targetProductType', '==', 'produto_final')
+              .limit(1)
+        );
+
+        if (!grupoMontagemEmbalagemQuery.empty) {
+          grupoMontagemEmbalagemDoc = grupoMontagemEmbalagemQuery.docs[0];
+          grupoMontagemEmbalagem = grupoMontagemEmbalagemDoc.data() as GrupoMontagem;
+        }
+      }
 
       if (!grupoMontagem.pecasNecessarias) {
         logger.warn(
@@ -108,6 +130,74 @@ export const handleEntradaPecaMontagemModelo = async (
         // TODO: Gerar próximo evento (entrada_modelo_montagem_kit ou entrada_modelo_embalagem)
         // Isso dependerá se o modelo é parte de um kit ou um produto final.
         // Por enquanto, apenas atualizamos o status.
+      }
+
+      // 4. Atualizar grupo de embalagem com a peça concluída
+      if (pedidoId && grupoMontagemEmbalagemDoc && grupoMontagemEmbalagem) {
+        // Encontrar e atualizar a peça correspondente nos produtosFinaisNecessarios
+        const updatedProdutosFinaisNecessarios = (grupoMontagemEmbalagem.produtosFinaisNecessarios || []).map((produto: any) => {
+          // Caso 1: Modelos dentro de kits (estrutura aninhada)
+          if (produto.modelos) {
+            const updatedModelos = produto.modelos.map((modelo: any) => {
+              if (modelo.modeloId === parentModeloId) {
+                // Encontrar a peça dentro deste modelo
+                const updatedPecas = (modelo.pecas || []).map((peca: any) => {
+                  if (peca.pecaId === pecaId) {
+                    const newQuantidadeAtendida = (peca.quantidadeAtendida || 0) + quantidade;
+                    return {
+                      ...peca,
+                      quantidadeAtendida: newQuantidadeAtendida
+                    };
+                  }
+                  return peca;
+                });
+
+                // NÃO atualizar quantidade atendida do modelo automaticamente
+                // Isso deve ser feito apenas quando o usuário concluir a montagem do modelo
+                return {
+                  ...modelo,
+                  pecas: updatedPecas
+                  // quantidadeAtendida não é alterado aqui
+                };
+              }
+              return modelo;
+            });
+
+            return {
+              ...produto,
+              modelos: updatedModelos
+            };
+          }
+          
+          // Caso 2: Modelo diretamente em produtosFinaisNecessarios (não aninhado em kit)
+          if (produto.tipo === 'modelo' && produto.produtoId === parentModeloId) {
+            // Encontrar e atualizar a peça dentro deste modelo
+            const updatedPecas = (produto.pecas || []).map((peca: any) => {
+              if (peca.pecaId === pecaId) {
+                const newQuantidadeAtendida = (peca.quantidadeAtendida || 0) + quantidade;
+                return {
+                  ...peca,
+                  quantidadeAtendida: newQuantidadeAtendida
+                };
+              }
+              return peca;
+            });
+
+            // NÃO atualizar quantidade atendida do modelo automaticamente
+            // Isso deve ser feito apenas quando o usuário concluir a montagem do modelo
+            return {
+              ...produto,
+              pecas: updatedPecas
+              // quantidadeAtendida não é alterado aqui
+            };
+          }
+          
+          return produto;
+        });
+
+        transaction.update(grupoMontagemEmbalagemDoc.ref, {
+          produtosFinaisNecessarios: updatedProdutosFinaisNecessarios
+        });
       }
 
       transaction.update(grupoMontagemDoc.ref, updatedGrupoMontagem);

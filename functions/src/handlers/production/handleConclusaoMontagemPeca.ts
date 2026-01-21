@@ -34,6 +34,7 @@ export async function handleConclusaoMontagemPeca(event: { data?: DocumentSnapsh
         const usuarioId = payload.usuarioId;
 
         await db.runTransaction(async (transaction) => {
+            // === FASE 1: TODAS AS LEITURAS ===
             const grupoMontagemRef = db.collection('gruposMontagem').doc(assemblyGroupId);
             const grupoMontagemSnapshot = await transaction.get(grupoMontagemRef);
 
@@ -54,6 +55,10 @@ export async function handleConclusaoMontagemPeca(event: { data?: DocumentSnapsh
             let pedidoSnapshot: admin.firestore.DocumentSnapshot | undefined;
             let allAssemblyGroupsQuerySnapshot: admin.firestore.QuerySnapshot | undefined;
 
+            // Buscar documento da peça para obter tempoMontagem (LEITURA)
+            const pecaRef = db.collection('pecas').doc(targetProductId);
+            const pecaSnapshot = await transaction.get(pecaRef);
+            
             // All reads must be performed before any writes
             let parentModelAssemblyInstanceId: string | undefined;
             if (parentModeloId) {
@@ -105,6 +110,51 @@ export async function handleConclusaoMontagemPeca(event: { data?: DocumentSnapsh
                 }
             }
 
+            // === DEBUG: Processar informações da peça ===
+            let tempoMontagemMinutos = 0;
+            console.log(`[DEBUG] Buscando peça ${targetProductId} para tempo de montagem`);
+            
+            if (pecaSnapshot.exists) {
+                const pecaData = pecaSnapshot.data();
+                tempoMontagemMinutos = parseFloat(pecaData?.tempoMontagem) || 0;
+                console.log(`[DEBUG] Peça encontrada - tempoMontagem: ${pecaData?.tempoMontagem} -> convertido: ${tempoMontagemMinutos}`);
+            } else {
+                console.log(`[DEBUG] Peça ${targetProductId} NÃO encontrada`);
+            }
+            
+            console.log(`[DEBUG] Verificando condição - tempoMontagemMinutos: ${tempoMontagemMinutos} > 0: ${tempoMontagemMinutos > 0}`);
+
+            // === FASE ADICIONAL: LEITURA DE INSUMOS (ANTES DO LOOP) ===
+            let insumosMontagemMap: Map<string, any> = new Map();
+            
+            if (pecaSnapshot.exists) {
+                const pecaData = pecaSnapshot.data();
+                const insumosAdicionais = pecaData?.insumosAdicionais || [];
+                
+                console.log(`[DEBUG] Insumos adicionais da peça ${targetProductId}:`, insumosAdicionais);
+                
+                // Filtrar insumos por etapa de montagem
+                const insumosMontagem = insumosAdicionais.filter((insumo: any) => 
+                    insumo.etapaInstalacao === 'montagem'
+                );
+                
+                console.log(`[DEBUG] Insumos de montagem filtrados:`, insumosMontagem);
+                
+                // Ler todos os insumos necessários ANTES do loop
+                const insumoIds = insumosMontagem.map((insumo: any) => insumo.insumoId);
+                const insumoDocs = await Promise.all(
+                    insumoIds.map((insumoId: string) => transaction.get(db.collection('insumos').doc(insumoId)))
+                );
+                
+                // Criar mapa de insumos para fácil acesso
+                insumoDocs.forEach((doc, index) => {
+                    if (doc.exists) {
+                        insumosMontagemMap.set(insumoIds[index], doc.data());
+                    }
+                });
+            }
+
+            // === FASE 2: TODAS AS ESCRITAS ===
             // 1. Update GrupoMontagem status
             transaction.update(grupoMontagemRef, {
                 status: 'montado',
@@ -175,6 +225,106 @@ export async function handleConclusaoMontagemPeca(event: { data?: DocumentSnapsh
                         status: 'processando_embalagem',
                     });
                 }
+            }
+
+            // 5. Lançar consumo de insumos de montagem
+            const newLancamentosInsumos: any[] = [];
+            try {
+                // Extrair insumos de montagem da peça
+                if (pecaSnapshot.exists) {
+                    const pecaData = pecaSnapshot.data();
+                    const insumosAdicionais = pecaData?.insumosAdicionais || [];
+                    
+                    console.log(`[DEBUG] Insumos adicionais da peça ${targetProductId}:`, insumosAdicionais);
+                    
+                    // Filtrar insumos por etapa de montagem
+                    const insumosMontagem = insumosAdicionais.filter((insumo: any) => 
+                        insumo.etapaInstalacao === 'montagem'
+                    );
+                    
+                    console.log(`[DEBUG] Insumos de montagem filtrados:`, insumosMontagem);
+                    
+                    // Para cada insumo de montagem, criar lançamento
+                    for (const insumo of insumosMontagem) {
+                        const quantidadeInsumo = typeof insumo.quantidade === 'string' ? parseFloat(insumo.quantidade) : insumo.quantidade;
+                        
+                        if (quantidadeInsumo > 0) {
+                            let locaisParaLancamento: { recipienteId: string; quantidade: number }[] = [];
+                            
+                            // Usar dados do insumo do mapa pré-carregado
+                            const insumoData = insumosMontagemMap.get(insumo.insumoId);
+                            if (insumoData) {
+                                
+                                if (insumoData.tipo === 'material' && insumoData?.posicoesEstoque) {
+                                    locaisParaLancamento = insumoData.posicoesEstoque.map((pos: any) => ({
+                                        recipienteId: pos.recipienteId,
+                                        localId: pos.localId,
+                                        divisao: pos.divisao || null,
+                                        quantidade: quantidadeInsumo,
+                                    }));
+                                } else {
+                                    locaisParaLancamento = (insumoData.localEstoqueInsumo || []).map((local: any) => ({
+                                        recipienteId: local.recipienteId,
+                                        quantidade: local.quantidade,
+                                    }));
+                                }
+                                
+                                const lancamentoInsumo = {
+                                    insumoId: insumo.insumoId,
+                                    tipoInsumo: insumoData.tipo || 'desconhecido',
+                                    tipoMovimento: 'saida',
+                                    quantidade: quantidadeInsumo,
+                                    unidadeMedida: 'unidades',
+                                    data: admin.firestore.Timestamp.now(),
+                                    detalhes: `Consumo para montagem de peça: ${grupoMontagem.targetProductName} (ID: ${targetProductId})`,
+                                    locais: locaisParaLancamento,
+                                    pedidoId: grupoMontagem.pedidoId,
+                                    usuario: usuarioId,
+                                    origem: 'producao',
+                                };
+                                
+                                newLancamentosInsumos.push(lancamentoInsumo);
+                                console.log(`[SUCCESS] Insumo de montagem lançado: ${insumoData.nome || 'Insumo sem nome'} (${quantidadeInsumo} ${insumoData.tipo})`);
+                            } else {
+                                console.warn(`[WARNING] Insumo ${insumo.insumoId} não encontrado no mapa pré-carregado. Lançamento ignorado.`);
+                            }
+                        }
+                    }
+                }
+                
+                // Criar os lançamentos de insumos
+                for (const lancamentoInsumo of newLancamentosInsumos) {
+                    transaction.create(db.collection('lancamentosInsumos').doc(), lancamentoInsumo);
+                }
+            } catch (insumosError) {
+                console.error(`[ERROR] Erro ao processar insumos de montagem:`, insumosError);
+                throw insumosError;
+            }
+
+            // 6. Lançar serviço de montagem
+            try {
+                if (tempoMontagemMinutos > 0) {
+                    const lancamentoServicoRef = db.collection('lancamentosServicos').doc();
+                    const lancamentoServico = {
+                        serviceType: 'montagem',
+                        origem: 'pedido',
+                        usuario: usuarioId,
+                        data: admin.firestore.FieldValue.serverTimestamp(),
+                        payload: {
+                            tipo: 'peça',
+                            total: tempoMontagemMinutos,
+                            pedidoId: grupoMontagem.pedidoId,
+                            assemblyGroup: assemblyGroupId
+                        }
+                    };
+                    transaction.create(lancamentoServicoRef, lancamentoServico);
+                    console.log(`[SUCCESS] Serviço de montagem de peça lançado: ${tempoMontagemMinutos} minutos`);
+                } else {
+                    console.log(`[INFO] Peça ${targetProductId} não tem tempo de montagem (${tempoMontagemMinutos}), serviço não lançado`);
+                }
+            } catch (serviceError) {
+                console.error(`[ERROR] Erro ao criar lançamento de serviço:`, serviceError);
+                throw serviceError;
             }
 
             console.log(`Grupo de montagem de peça ${assemblyGroupId} concluído com sucesso. Próximo evento: ${nextTipoEvento}`);

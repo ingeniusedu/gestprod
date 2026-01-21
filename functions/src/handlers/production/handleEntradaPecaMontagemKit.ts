@@ -113,6 +113,51 @@ export const handleEntradaPecaMontagemKit = async (event: { data?: DocumentSnaps
             transaction.set(newLancamentoProducaoRef, newLancamentoProducao);
         }
 
+        // 4. Atualizar grupo de embalagem com a peça concluída
+        const pedidoId = parentKitAssemblyInstanceId.split('-')[0];
+        if (pedidoId) {
+            const packagingAssemblyInstanceId = `${pedidoId}-embalagem-final`;
+            
+            const grupoMontagemEmbalagemQuery = await transaction.get(
+                db.collection('gruposMontagem')
+                    .where('assemblyInstanceId', '==', packagingAssemblyInstanceId)
+                    .where('targetProductType', '==', 'produto_final')
+                    .limit(1)
+            );
+
+            if (!grupoMontagemEmbalagemQuery.empty) {
+                const grupoMontagemEmbalagemDoc = grupoMontagemEmbalagemQuery.docs[0];
+                const grupoMontagemEmbalagem = grupoMontagemEmbalagemDoc.data() as GrupoMontagem;
+
+                // Encontrar e atualizar a peça correspondente nos produtosFinaisNecessarios
+                const updatedProdutosFinaisNecessarios = (grupoMontagemEmbalagem.produtosFinaisNecessarios || []).map((produto: any) => {
+                    if (produto.produtoId === payload.parentKitId && produto.tipo === 'kit') {
+                        // Encontrar a peça direta do kit
+                        const updatedPecas = (produto.pecas || []).map((peca: any) => {
+                            if (peca.pecaId === payload.pecaId) {
+                                const newQuantidadeAtendida = (peca.quantidadeAtendida || 0) + payload.quantidade;
+                                return {
+                                    ...peca,
+                                    quantidadeAtendida: newQuantidadeAtendida
+                                };
+                            }
+                            return peca;
+                        });
+
+                        return {
+                            ...produto,
+                            pecas: updatedPecas
+                        };
+                    }
+                    return produto;
+                });
+
+                transaction.update(grupoMontagemEmbalagemDoc.ref, {
+                    produtosFinaisNecessarios: updatedProdutosFinaisNecessarios
+                });
+            }
+        }
+
         const updateData: Partial<GrupoMontagem> = {
             status: grupoMontagemKit.status,
             pecasNecessarias: grupoMontagemKit.pecasNecessarias,

@@ -21,9 +21,9 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
   const [kits, setKits] = useState<Kit[]>([]);
   const [selectedKits, setSelectedKits] = useState<string[]>([]); // New state for selected kits
   const [serviceCosts, setServiceCosts] = useState({
-    custoPorMinutoImpressao: 0,
-    custoPorMinutoMontagem: 0,
-    custoPorGramaFilamento: 0,
+    costPerMinute3DPrint: 0,
+    costPerMinuteAssembly: 0,
+    costPerMinutePackaging: 0,
   });
   const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
   const [modelos, setModelos] = useState<Modelo[]>([]); // Needed for calculating kit costs
@@ -58,10 +58,21 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
             ]);
 
             setKits(kitsSnapshot.docs.map(doc => {
-              const data = doc.data();
+              const data = doc.data() as any;
               const posicoes = data.posicoesEstoque || [];
               const estoqueTotal = posicoes.reduce((acc: number, pos: PosicaoEstoque) => acc + pos.quantidade, 0);
-              return { id: doc.id, ...data, estoqueTotal } as Kit;
+              const custoDetalhado = data.custoDetalhado || {};
+              
+              return { 
+                id: doc.id, 
+                ...data, 
+                estoqueTotal,
+                custoCalculado: data.custoCalculado || 0,
+                custoCalculadoFilamento: custoDetalhado.filamento || 0,
+                custoCalculadoImpressao: custoDetalhado.impressao3D || 0,
+                custoCalculadoMontagem: custoDetalhado.montagem || 0,
+                custoCalculadoInsumos: custoDetalhado.insumos || 0,
+              } as Kit;
             }));
             const fetchedPecas = pecasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Peca[];
             const fetchedInsumos = insumosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Insumo[];
@@ -86,7 +97,7 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
             const serviceCostsRef = doc(db, 'settings', 'serviceCosts');
             const serviceCostsSnap = await getDoc(serviceCostsRef);
             if (serviceCostsSnap.exists()) {
-              setServiceCosts(serviceCostsSnap.data() as { custoPorMinutoImpressao: number; custoPorMinutoMontagem: number; custoPorGramaFilamento: number; });
+              setServiceCosts(serviceCostsSnap.data() as { costPerMinute3DPrint: number; costPerMinuteAssembly: number; costPerMinutePackaging: number; });
             }
           } catch (error) {
             console.error("Error fetching data: ", error);
@@ -157,7 +168,7 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
         const docRef = doc(db, 'settings', 'serviceCosts');
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
-          setServiceCosts(docSnap.data() as { custoPorMinutoImpressao: number; custoPorMinutoMontagem: number; custoPorGramaFilamento: number; });
+          setServiceCosts(docSnap.data() as { costPerMinute3DPrint: number; costPerMinuteAssembly: number; costPerMinutePackaging: number; });
         }
       } catch (error) {
         console.error("Error fetching service costs: ", error);
@@ -176,7 +187,7 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
     setSelectedModeloForDetails(null);
   };
 
-  const calculateModeloCost = (modeloId: string, allModelos: Modelo[], allPecas: Peca[], allInsumos: Insumo[], currentServiceCosts: { custoPorMinutoImpressao: number; custoPorMinutoMontagem: number; custoPorGramaFilamento: number; }) => {
+  const calculateModeloCost = (modeloId: string, allModelos: Modelo[], allPecas: Peca[], allInsumos: Insumo[], currentServiceCosts: { costPerMinute3DPrint: number; costPerMinuteAssembly: number; costPerMinutePackaging: number; }) => {
     const foundModelo = allModelos.find(m => m.id === modeloId);
     if (!foundModelo) return 0;
 
@@ -209,11 +220,10 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
       }
     });
 
-    const impressionCost = totalImpressionTime * currentServiceCosts.custoPorMinutoImpressao;
-    const assemblyCost = totalAssemblyTime * currentServiceCosts.custoPorMinutoMontagem;
-    const filamentCost = totalFilamentQuantity * currentServiceCosts.custoPorGramaFilamento;
+    const impressionCost = totalImpressionTime * currentServiceCosts.costPerMinute3DPrint;
+    const assemblyCost = totalAssemblyTime * currentServiceCosts.costPerMinuteAssembly;
 
-    return filamentCost + impressionCost + assemblyCost;
+    return impressionCost + assemblyCost;
   };
 
   const handleEditKit = (kit: Kit) => {
@@ -307,8 +317,14 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
 
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <span className="text-gray-500">Custo:</span>
+            <span className="text-gray-500">Custo Total:</span>
             <div className="font-medium text-gray-900">R$ {kit.custoCalculado?.toFixed(2) || '0.00'}</div>
+            <div className="text-xs text-gray-500">
+              <div>• Filamento: R$ {(kit.custoCalculadoFilamento || 0).toFixed(2)}</div>
+              <div>• Impressão: R$ {(kit.custoCalculadoImpressao || 0).toFixed(2)}</div>
+              <div>• Montagem: R$ {(kit.custoCalculadoMontagem || 0).toFixed(2)}</div>
+              <div>• Insumos: R$ {(kit.custoCalculadoInsumos || 0).toFixed(2)}</div>
+            </div>
           </div>
           <div>
             <span className="text-gray-500">Preço Sugerido:</span>
@@ -370,7 +386,15 @@ export default function KitsPage({ isOnlyButton = false, searchTerm: propSearchT
           )}
         </td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kit.tempoMontagem || '0'} min</td>
-        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {kit.custoCalculado?.toFixed(2) || '0.00'}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+          <div>R$ {kit.custoCalculado?.toFixed(2) || '0.00'}</div>
+          <div className="text-xs text-gray-400">
+            <div>F: R$ {(kit.custoCalculadoFilamento || 0).toFixed(2)}</div>
+            <div>I: R$ {(kit.custoCalculadoImpressao || 0).toFixed(2)}</div>
+            <div>M: R$ {(kit.custoCalculadoMontagem || 0).toFixed(2)}</div>
+            <div>O: R$ {(kit.custoCalculadoInsumos || 0).toFixed(2)}</div>
+          </div>
+        </td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">R$ {kit.precoSugerido?.toFixed(2) || '0.00'}</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
           {kit.custoCalculado > 0 ? (((kit.precoSugerido - kit.custoCalculado) / kit.custoCalculado) * 100).toFixed(1) : '0.0'}%

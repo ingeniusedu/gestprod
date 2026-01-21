@@ -5,7 +5,7 @@ import { Plus, Search, Puzzle, Edit, Trash2, Settings, Spool, List, Grid } from 
 import PecaFormModal from '../../components/PecaFormModal';
 import ServiceCostModal from '../../components/ServiceCostModal';
 import { db, auth, addParte, updateParte, addPeca, updatePeca, deletePecas, deletePeca, getLocaisProdutos, getRecipientes } from '../../services/firebase';
-import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Peca, PosicaoEstoque, Insumo, Parte, GrupoImpressao, PecaInsumo, Produto, Modelo, Kit, PecaParte, GrupoDeFilamento } from '../../types';
 import { LocalProduto, Recipiente } from '../../types/mapaEstoque';
@@ -80,22 +80,26 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       ]);
 
       const fetchedPecas = pecasSnapshot.docs.map(doc => {
-        const data = doc.data() as Peca;
+        const data = doc.data() as any; // Usar any para acessar custoDetalhado
         const posicoes = data.posicoesEstoque || [];
         const estoqueTotal = posicoes.reduce((acc: number, pos: PosicaoEstoque) => acc + (pos.quantidade || 0), 0);
+        const custoDetalhado = data.custoDetalhado || {};
+        
         return {
           id: doc.id,
-          sku: data.sku || '',
+          SKU: data.sku || '',
           nome: data.nome || '',
-          isComposta: data.isComposta || false,
           tipoPeca: data.tipoPeca || 'simples',
           gruposImpressao: data.gruposImpressao || [],
           tempoMontagem: data.tempoMontagem || 0,
           custoCalculado: data.custoCalculado || 0,
+          custoCalculadoFilamento: custoDetalhado.filamento || 0,
+          custoCalculadoImpressao: custoDetalhado.impressao3D || 0,
+          custoCalculadoMontagem: custoDetalhado.montagem || 0,
+          custoCalculadoInsumos: custoDetalhado.insumos || 0,
           precoSugerido: data.precoSugerido || 0,
           posicoesEstoque: posicoes,
           estoqueTotal,
-          tipoProduto: 'peca'
         } as Peca;
       });
 
@@ -181,57 +185,28 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       const fetchedGruposDeFilamento = gruposDeFilamentoSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as GrupoDeFilamento[];
       setGruposDeFilamento(fetchedGruposDeFilamento);
 
-      // Recalculate costs for fetchedPecas
-      const pecasWithRecalculatedCosts = fetchedPecas.map(peca => {
-        let totalFilamentCost = 0;
-        let totalImpressionTime = 0;
-        let totalOtherInsumosCost = 0;
-
-        for (const grupo of peca.gruposImpressao) {
-          totalImpressionTime += Number(grupo.tempoImpressao || 0);
-          if (grupo.filamentos && Array.isArray(grupo.filamentos)) {
-            for (const fil of grupo.filamentos) {
-              if (fil.quantidade > 0 && fil.grupoFilamentoId) {
-                const grupoDeFilamento = fetchedGruposDeFilamento.find(g => g.id === fil.grupoFilamentoId);
-                if (grupoDeFilamento && grupoDeFilamento.custoMedioPonderado > 0) {
-                  totalFilamentCost += Number(fil.quantidade || 0) * grupoDeFilamento.custoMedioPonderado;
-                } else {
-                  console.warn(`Grupo de filamento ${fil.grupoFilamentoId} não encontrado ou sem custo médio. O custo da peça pode estar incorreto.`);
-                }
-              }
-            }
-          }
-          if (grupo.outrosInsumos && Array.isArray(grupo.outrosInsumos)) {
-            for (const insumoItem of grupo.outrosInsumos) {
-              if (insumoItem.quantidade > 0 && insumoItem.insumoId) {
-                const insumoData = fetchedInsumos.find(i => i.id === insumoItem.insumoId);
-                if (insumoData && insumoData.custoPorUnidade > 0) {
-                  totalOtherInsumosCost += Number(insumoItem.quantidade || 0) * insumoData.custoPorUnidade;
-                } else {
-                  console.warn(`Insumo ${insumoItem.insumoId} não encontrado ou sem custo por unidade. O custo da peça pode estar incorreto.`);
-                }
-              }
-            }
-          }
-        }
-
-        const impressionCost = totalImpressionTime * Number(currentServiceCosts.custoPorMinutoImpressao || 0);
-        const assemblyCost = Number(peca.tempoMontagem || 0) * Number(currentServiceCosts.custoPorMinutoMontagem || 0);
+      // Usar os custos já calculados pelo backend (custoDetalhado.total ou custoCalculado)
+      const pecasWithCorrectCosts = fetchedPecas.map(peca => {
+        // Acessar custoDetalhado como any já que não está no tipo Peca
+        const pecaAny = peca as any;
+        const custoDetalhado = pecaAny.custoDetalhado || {};
+        // Usar custoDetalhado.total se existir, senão usar custoCalculado
+        const custoTotal = custoDetalhado.total || peca.custoCalculado || 0;
         
         return {
           ...peca,
-          custoCalculado: totalFilamentCost + impressionCost + assemblyCost + totalOtherInsumosCost
+          custoCalculado: custoTotal
         };
       });
 
-      setPecas(pecasWithRecalculatedCosts);
+      setPecas(pecasWithCorrectCosts);
       setInsumos(fetchedInsumos);
       setPartes(fetchedPartes);
       setModelos(fetchedModelos);
       setKits(fetchedKits);
 
       setAllProducts([
-        ...pecasWithRecalculatedCosts, // Use recalculated pecas
+        ...pecasWithCorrectCosts, // Use pecas com custos corretos
         ...fetchedInsumos,
         ...fetchedPartes,
         ...fetchedModelos,
@@ -252,6 +227,42 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
 
   useEffect(() => {
     fetchAllData();
+    
+    // Configurar listeners em tempo real para peças - versão simplificada
+    const unsubscribePecas = onSnapshot(collection(db, 'pecas'), (snapshot) => {
+      console.log('Pecas atualizadas em tempo real:', snapshot.docs.length);
+      const fetchedPecas = snapshot.docs.map(doc => {
+        const data = doc.data();
+        const posicoes = data.posicoesEstoque || [];
+        const estoqueTotal = posicoes.reduce((acc: number, pos: any) => acc + (pos.quantidade || 0), 0);
+        const custoDetalhado = data.custoDetalhado || {};
+        
+        return {
+          id: doc.id,
+          SKU: data.sku || '',
+          nome: data.nome || '',
+          tipoPeca: data.tipoPeca || 'simples',
+          gruposImpressao: data.gruposImpressao || [],
+          tempoMontagem: data.tempoMontagem || 0,
+          custoCalculado: data.custoCalculado || 0,
+          custoCalculadoFilamento: custoDetalhado.filamento || 0,
+          custoCalculadoImpressao: custoDetalhado.impressao3D || 0,
+          custoCalculadoMontagem: custoDetalhado.montagem || 0,
+          custoCalculadoInsumos: custoDetalhado.insumos || 0,
+          precoSugerido: data.precoSugerido || 0,
+          posicoesEstoque: posicoes,
+          estoqueTotal,
+        } as Peca;
+      });
+      
+      // Usar os custos já calculados pelo backend
+      setPecas(fetchedPecas);
+    });
+    
+    // Cleanup function
+    return () => {
+      unsubscribePecas();
+    };
   }, []);
 
   const getLocalName = (recipienteId: string) => {
@@ -280,11 +291,11 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
       const pecaLocal = getLocalString(peca.posicoesEstoque || []);
       return (
         peca.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        peca.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        peca.SKU.toLowerCase().includes(searchTerm.toLowerCase()) ||
         pecaLocal.toLowerCase().includes(searchTerm.toLowerCase())
       );
     })
-    .sort((a, b) => a.sku.localeCompare(b.sku));
+    .sort((a, b) => a.SKU.localeCompare(b.SKU));
 
   const openPecaModal = (peca: Peca | null = null) => {
     setPecaToEdit(peca);
@@ -333,7 +344,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
                 const novaParteData = {
                   nome: pecaParte.nome || '',
                   identificador: pecaParte.identificador || '',
-                  sku: `${pecaData.sku}-${pecaParte.identificador || '00'}`,
+                  sku: `${pecaData.SKU}-${pecaParte.identificador || '00'}`,
                   estoque: 0,
                   local: 'Estoque Geral',
                   createdAt: new Date(),
@@ -467,7 +478,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
         <div className="flex justify-between items-start mb-4">
           <div>
             <h3 className="text-lg font-medium text-gray-900">{peca.nome}</h3>
-            <p className="text-sm text-gray-500">SKU: {peca.sku}</p>
+            <p className="text-sm text-gray-500">SKU: {peca.SKU}</p>
           </div>
           <Puzzle className="h-8 w-8 text-purple-500" />
         </div>
@@ -510,7 +521,15 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
           <div><strong>Impressão:</strong> {totalTempoImpressao} min</div>
           <div><strong>Filamento:</strong> {totalFilamento.toFixed(2)} g</div>
           <div><strong>Montagem:</strong> {totalTempoMontagem} min</div>
-          <div><strong>Custo:</strong> R$ {(peca.custoCalculado || 0).toFixed(2)}</div>
+          <div className="space-y-1">
+            <div><strong>Custo Total:</strong> R$ {(peca.custoCalculado || 0).toFixed(2)}</div>
+            <div className="text-xs text-gray-500 pl-2">
+              <div>• Filamento: R$ {(peca.custoCalculadoFilamento || 0).toFixed(2)}</div>
+              <div>• Impressão: R$ {(peca.custoCalculadoImpressao || 0).toFixed(2)}</div>
+              <div>• Montagem: R$ {(peca.custoCalculadoMontagem || 0).toFixed(2)}</div>
+              <div>• Insumos: R$ {(peca.custoCalculadoInsumos || 0).toFixed(2)}</div>
+            </div>
+          </div>
         </div>
         <div className="flex justify-end mt-4">
           <button
@@ -553,7 +572,7 @@ export default function PecasPage({ isOnlyButton = false, searchTerm: propSearch
             onChange={() => handleSelectPeca(peca.id)}
           />
         </td>
-        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{peca.sku}</td>
+        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{peca.SKU}</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{peca.nome}</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{peca.estoqueTotal || 0}</td>
         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getLocalString(peca.posicoesEstoque || [])}</td>

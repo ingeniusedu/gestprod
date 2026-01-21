@@ -4,6 +4,7 @@ import { db as firestore } from '../services/firebase';
 import { collection, addDoc, doc, updateDoc } from 'firebase/firestore';
 import ModeloSelectionModal from './ModeloSelectionModal';
 import PecaSelectionModal from './PecaSelectionModal';
+import InsumoSelectionModal from './InsumoSelectionModal';
 import { cleanObject } from '../utils/cleanObject';
 
 const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCosts }) => {
@@ -12,12 +13,15 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
   const [componentes, setComponentes] = useState([]);
   const [isModeloSelectionModalOpen, setModeloSelectionModalOpen] = useState(false);
   const [isPecaSelectionModalOpen, setPecaSelectionModalOpen] = useState(false);
+  const [isInsumoSelectionModalOpen, setInsumoSelectionModalOpen] = useState(false);
   const [errors, setErrors] = useState({});
   const [isFormValid, setIsFormValid] = useState(false); // New state for form validity
 
   const [custoTotal, setCustoTotal] = useState(0);
   const [tempoMontagemTotal, setTempoMontagemTotal] = useState(0);
+  const [tempoMontagemAdicional, setTempoMontagemAdicional] = useState(0);
   const [consumoFilamentoTotal, setConsumoFilamentoTotal] = useState(0);
+  const [insumosAdicionais, setInsumosAdicionais] = useState([]);
 
   // Effect to initialize form data and clear errors
   useEffect(() => {
@@ -26,10 +30,14 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
         setSku(kit.sku);
         setNome(kit.nome);
         setComponentes(kit.componentes || []);
+        setTempoMontagemAdicional(kit.tempoMontagemAdicional || 0);
+        setInsumosAdicionais(kit.insumosAdicionais || []);
       } else {
         setSku('');
         setNome('');
         setComponentes([]);
+        setTempoMontagemAdicional(0);
+        setInsumosAdicionais([]);
       }
       setErrors({});
     }
@@ -41,6 +49,7 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
     let calculatedAssemblyTime = 0;
     let calculatedFilamentConsumption = 0;
 
+    // Calculate costs from componentes
     componentes.forEach(comp => {
       if (comp.tipo === 'modelo') {
         const foundModelo = modelos.find(m => m.id === comp.id);
@@ -81,10 +90,18 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
       }
     });
 
+    // Calculate costs from insumos adicionais
+    insumosAdicionais.forEach(insumo => {
+      const insumoData = insumos.find(i => i.id === insumo.insumo.id);
+      if (insumoData && insumoData.custoPorUnidade) {
+        calculatedCost += insumo.quantidade * parseFloat(insumoData.custoPorUnidade);
+      }
+    });
+
     setCustoTotal(calculatedCost);
     setTempoMontagemTotal(calculatedAssemblyTime);
     setConsumoFilamentoTotal(calculatedFilamentConsumption);
-  }, [componentes, modelos, pecas, insumos, serviceCosts]);
+  }, [componentes, insumosAdicionais, modelos, pecas, insumos, serviceCosts]);
 
   // Function to validate form fields
   const validateForm = () => {
@@ -126,8 +143,15 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
         quantidade: comp.quantidade,
         tipo: comp.tipo,
       })),
+      insumosAdicionais: insumosAdicionais.map(insumo => ({
+        insumoId: insumo.insumo.id,
+        nome: insumo.insumo.nome,
+        tipo: insumo.insumo.tipo,
+        quantidade: insumo.quantidade,
+      })),
       custoCalculado: custoTotal,
       tempoMontagem: tempoMontagemTotal,
+      tempoMontagemAdicional: tempoMontagemAdicional,
       consumoFilamento: consumoFilamentoTotal,
     });
 
@@ -183,6 +207,25 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
 
   const handleRemoveComponente = (componenteId) => {
     setComponentes(prev => prev.filter(comp => comp.id !== componenteId));
+  };
+
+  const handleSelectInsumos = (selectedInsumos) => {
+    setInsumosAdicionais(selectedInsumos);
+  };
+
+  const handleInsumoQuantityChange = (insumoId, quantidade) => {
+    setInsumosAdicionais(prev => {
+      return prev.map(insumo => {
+        if (insumo.insumo.id === insumoId) {
+          return { ...insumo, quantidade: quantidade };
+        }
+        return insumo;
+      });
+    });
+  };
+
+  const handleRemoveInsumo = (insumoId) => {
+    setInsumosAdicionais(prev => prev.filter(insumo => insumo.insumo.id !== insumoId));
   };
 
   if (!isOpen) return null;
@@ -286,7 +329,52 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
             {errors.componentes && <p className="mt-1 text-sm text-red-600">{errors.componentes}</p>}
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4 p-4 border rounded-md bg-gray-50">
+          <div className="mt-6 mb-4">
+            <h3 className="font-semibold text-gray-800 mb-2">Insumos Adicionais:</h3>
+            <div className="mb-4">
+              <button
+                type="button"
+                onClick={() => setInsumoSelectionModalOpen(true)}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-orange-600 hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Adicionar Insumos
+              </button>
+            </div>
+
+            <div className="mt-2 space-y-2 max-h-48 overflow-y-auto border rounded-md p-2 border-gray-300">
+              {insumosAdicionais.length > 0 ? insumosAdicionais.map(insumo => (
+                <div key={insumo.insumo.id} className="flex items-center justify-between bg-gray-50 p-2 rounded-md">
+                  <div>
+                    <span className="font-medium">{insumo.insumo.nome}</span>
+                    <span className="text-sm text-gray-500 ml-2">({insumo.insumo.tipo})</span>
+                  </div>
+                  <div className="flex items-center">
+                    <input
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      value={insumo.quantidade}
+                      onChange={(e) => handleInsumoQuantityChange(insumo.insumo.id, parseFloat(e.target.value) || 0)}
+                      className="w-24 p-1 border-gray-300 rounded-md shadow-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveInsumo(insumo.insumo.id)}
+                      className="ml-2 text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-100"
+                      title="Remover Insumo"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+                </div>
+              )) : (
+                <p className="text-gray-500 text-center py-4">Nenhum insumo selecionado.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 p-4 border rounded-md bg-gray-50">
               <div className="text-center">
                   <label className="block text-sm font-medium text-gray-700">Custo Total</label>
                   <p className="mt-1 text-lg font-semibold text-green-600">R$ {custoTotal.toFixed(2)}</p>
@@ -294,6 +382,17 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
               <div className="text-center">
                   <label className="block text-sm font-medium text-gray-700">Tempo Montagem</label>
                   <p className="mt-1 text-lg font-semibold text-gray-900">{tempoMontagemTotal} min</p>
+              </div>
+              <div className="text-center">
+                  <label className="block text-sm font-medium text-gray-700">Tempo Montagem Adicional</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={tempoMontagemAdicional}
+                    onChange={(e) => setTempoMontagemAdicional(parseFloat(e.target.value) || 0)}
+                    className="mt-1 block w-full rounded-md border border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm text-center"
+                    placeholder="Tempo adicional de montagem (min)"
+                  />
               </div>
               <div className="text-center">
                   <label className="block text-sm font-medium text-gray-700">Consumo Filamento</label>
@@ -332,6 +431,12 @@ const KitFormModal = ({ isOpen, onClose, kit, modelos, pecas, insumos, serviceCo
           onClose={() => setPecaSelectionModalOpen(false)}
           onSelect={(selected) => handleSelectComponentes(selected, 'peca')}
           initialSelectedPecas={componentes.filter(c => c.tipo === 'peca')}
+        />
+        <InsumoSelectionModal
+          isOpen={isInsumoSelectionModalOpen}
+          onClose={() => setInsumoSelectionModalOpen(false)}
+          onSelect={handleSelectInsumos}
+          initialSelectedInsumos={insumosAdicionais}
         />
       </div>
     </div>

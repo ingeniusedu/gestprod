@@ -46,6 +46,7 @@ export async function handleConclusaoMontagemKit(event: { data?: DocumentSnapsho
         const modelosNecessarios = payload.modelosNecessarios || [];
 
         await db.runTransaction(async (transaction) => {
+            // === FASE 1: TODAS AS LEITURAS ===
             const grupoOrigemRef = db.collection('gruposMontagem').doc(assemblyGroupId);
             const grupoOrigemSnapshot = await transaction.get(grupoOrigemRef);
 
@@ -65,6 +66,25 @@ export async function handleConclusaoMontagemKit(event: { data?: DocumentSnapsho
                 }
             }
 
+            // Buscar documento do kit para obter tempoMontagemAdicional (LEITURA)
+            const kitRef = db.collection('kits').doc(targetProductId);
+            const kitSnapshot = await transaction.get(kitRef);
+
+            // === DEBUG: Processar informações do kit ===
+            let tempoMontagemAdicionalMinutos = 0;
+            console.log(`[DEBUG] Buscando kit ${targetProductId} para tempoMontagemAdicional`);
+            
+            if (kitSnapshot.exists) {
+                const kitData = kitSnapshot.data();
+                tempoMontagemAdicionalMinutos = parseFloat(kitData?.tempoMontagemAdicional) || 0;
+                console.log(`[DEBUG] Kit encontrado - tempoMontagemAdicional: ${kitData?.tempoMontagemAdicional} -> convertido: ${tempoMontagemAdicionalMinutos}`);
+            } else {
+                console.log(`[DEBUG] Kit ${targetProductId} NÃO encontrado`);
+            }
+            
+            console.log(`[DEBUG] Verificando condição - tempoMontagemAdicionalMinutos: ${tempoMontagemAdicionalMinutos} > 0: ${tempoMontagemAdicionalMinutos > 0}`);
+
+            // === FASE 2: TODAS AS ESCRITAS ===
             // 1. Update status of GrupoMontagem to 'montado'
             const currentStatus = grupoMontagemData.status;
             if (currentStatus !== 'montado') {
@@ -84,7 +104,7 @@ export async function handleConclusaoMontagemKit(event: { data?: DocumentSnapsho
                 quantidade: quantidade,
                 usuario: usuarioId,
                 observacao: `Entrada de kit montado: ${grupoMontagemData.targetProductName} (ID: ${targetProductId})`,
-                data: admin.firestore.Timestamp.now(),
+                data: admin.firestore.FieldValue.serverTimestamp(),
                 locais: [], // Locais will be handled by the next event (embalagem)
             };
             transaction.set(lancamentoKitRef, cleanObject(lancamentoKit));
@@ -108,7 +128,7 @@ export async function handleConclusaoMontagemKit(event: { data?: DocumentSnapsho
                         quantidade: modelo.quantidade,
                         usuario: usuarioId,
                         observacao: `Saída de modelo para montagem de kit: ${modelo.nome} (ID: ${modelo.modeloId})`,
-                        data: admin.firestore.Timestamp.now(),
+                        data: admin.firestore.FieldValue.serverTimestamp(),
                         locais: locaisDebito,
                     };
                     transaction.set(lancamentoModeloRef, cleanObject(lancamentoModelo));
@@ -160,6 +180,122 @@ export async function handleConclusaoMontagemKit(event: { data?: DocumentSnapsho
                 usuarioId: usuarioId,
                 payload: nextPayload,
             });
+
+            // === FASE ADICIONAL: LEITURA DE INSUMOS (ANTES DO LOOP) ===
+            let insumosMontagemMap: Map<string, any> = new Map();
+            
+            if (kitSnapshot.exists) {
+                const kitData = kitSnapshot.data();
+                const insumosAdicionais = kitData?.insumosAdicionais || [];
+                
+                console.log(`[DEBUG] Insumos adicionais do kit ${targetProductId}:`, insumosAdicionais);
+                
+                // Ler todos os insumos necessários ANTES do loop
+                const insumoIds = insumosAdicionais.map((insumo: any) => insumo.insumoId);
+                const insumoDocs = await Promise.all(
+                    insumoIds.map((insumoId: string) => transaction.get(db.collection('insumos').doc(insumoId)))
+                );
+                
+                // Criar mapa de insumos para fácil acesso
+                insumoDocs.forEach((doc, index) => {
+                    if (doc.exists) {
+                        insumosMontagemMap.set(insumoIds[index], doc.data());
+                    }
+                });
+            }
+
+            // 6. Lançar consumo de insumos de montagem
+            const newLancamentosInsumos: any[] = [];
+            try {
+                // Extrair insumos de montagem do kit (todos - sem filtro de etapa)
+                if (kitSnapshot.exists) {
+                    const kitData = kitSnapshot.data();
+                    const insumosAdicionais = kitData?.insumosAdicionais || [];
+                    
+                    console.log(`[DEBUG] Insumos adicionais do kit ${targetProductId}:`, insumosAdicionais);
+                    
+                    // Para cada insumo adicional, criar lançamento (todos são para montagem)
+                    for (const insumo of insumosAdicionais) {
+                        const quantidadeInsumo = typeof insumo.quantidade === 'string' ? parseFloat(insumo.quantidade) : insumo.quantidade;
+                        
+                        if (quantidadeInsumo > 0) {
+                            let locaisParaLancamento: { recipienteId: string; quantidade: number }[] = [];
+                            
+                            // Usar dados do insumo do mapa pré-carregado
+                            const insumoData = insumosMontagemMap.get(insumo.insumoId);
+                            if (insumoData) {
+                                
+                                if (insumoData.tipo === 'material' && insumoData?.posicoesEstoque) {
+                                    locaisParaLancamento = insumoData.posicoesEstoque.map((pos: any) => ({
+                                        recipienteId: pos.recipienteId,
+                                        localId: pos.localId,
+                                        divisao: pos.divisao || null,
+                                        quantidade: quantidadeInsumo,
+                                    }));
+                                } else {
+                                    locaisParaLancamento = (insumoData.localEstoqueInsumo || []).map((local: any) => ({
+                                        recipienteId: local.recipienteId,
+                                        quantidade: local.quantidade,
+                                    }));
+                                }
+                                
+                                const lancamentoInsumo = {
+                                    insumoId: insumo.insumoId,
+                                    tipoInsumo: insumoData.tipo || 'desconhecido',
+                                    tipoMovimento: 'saida',
+                                    quantidade: quantidadeInsumo,
+                                    unidadeMedida: 'unidades',
+                                    data: admin.firestore.Timestamp.now(),
+                                    detalhes: `Consumo para montagem de kit: ${grupoMontagemData.targetProductName} (ID: ${targetProductId})`,
+                                    locais: locaisParaLancamento,
+                                    pedidoId: pedidoId,
+                                    usuario: usuarioId,
+                                    origem: 'producao',
+                                };
+                                
+                                newLancamentosInsumos.push(lancamentoInsumo);
+                                console.log(`[SUCCESS] Insumo de montagem de kit lançado: ${insumoData.nome || 'Insumo sem nome'} (${quantidadeInsumo} ${insumoData.tipo})`);
+                            } else {
+                                console.warn(`[WARNING] Insumo ${insumo.insumoId} não encontrado no mapa pré-carregado. Lançamento ignorado.`);
+                            }
+                        }
+                    }
+                }
+                
+                // Criar os lançamentos de insumos
+                for (const lancamentoInsumo of newLancamentosInsumos) {
+                    transaction.create(db.collection('lancamentosInsumos').doc(), lancamentoInsumo);
+                }
+            } catch (insumosError) {
+                console.error(`[ERROR] Erro ao processar insumos de montagem de kit:`, insumosError);
+                throw insumosError;
+            }
+
+            // 7. Lançar serviço de montagem
+            try {
+                if (tempoMontagemAdicionalMinutos > 0) {
+                    const lancamentoServicoRef = db.collection('lancamentosServicos').doc();
+                    const lancamentoServico = {
+                        serviceType: 'montagem',
+                        origem: 'pedido',
+                        usuario: usuarioId,
+                        data: admin.firestore.FieldValue.serverTimestamp(),
+                        payload: {
+                            tipo: 'kit',
+                            total: tempoMontagemAdicionalMinutos,
+                            pedidoId: pedidoId,
+                            assemblyGroup: assemblyGroupId
+                        }
+                    };
+                    transaction.create(lancamentoServicoRef, lancamentoServico);
+                    console.log(`[SUCCESS] Serviço de montagem de kit lançado: ${tempoMontagemAdicionalMinutos} minutos`);
+                } else {
+                    console.log(`[INFO] Kit ${targetProductId} não tem tempoMontagemAdicional (${tempoMontagemAdicionalMinutos}), serviço não lançado`);
+                }
+            } catch (serviceError) {
+                console.error(`[ERROR] Erro ao criar lançamento de serviço:`, serviceError);
+                throw serviceError;
+            }
 
             console.log(`Grupo de montagem de kit ${assemblyGroupId} concluído com sucesso. Próximo evento: ${LancamentoProducaoTipoEvento.ENTRADA_KIT_EMBALAGEM}`);
         });

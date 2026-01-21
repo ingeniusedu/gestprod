@@ -51,6 +51,7 @@ export const useStockCalculations = () => {
       allRecipientesData: Recipiente[]
     ): { estoqueTotal: number; posicoesEstoque: PosicaoEstoque[] } => {
 
+
       let estoqueTotal = 0;
       let posicoesEstoque: PosicaoEstoque[] = [];
       
@@ -76,7 +77,7 @@ export const useStockCalculations = () => {
           const insumo = allInsumosData.find(i => i.id === productId);
           if (insumo) {
             posicoesEstoque = enrichPosicoesEstoque(insumo.posicoesEstoque || [], 'insumo', allLocaisProdutosData, allLocaisInsumosData, allRecipientesData);
-            estoqueTotal = insumo.estoqueTotal ?? calculateStockFromPositions(posicoesEstoque);
+            estoqueTotal = (insumo as any).estoqueAtual ?? insumo.estoqueTotal ?? calculateStockFromPositions(posicoesEstoque);
           }
         }
       } else if (productType === 'peca') {

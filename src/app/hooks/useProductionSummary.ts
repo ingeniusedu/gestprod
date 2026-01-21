@@ -18,7 +18,12 @@ export const useProductionSummary = ({
   const generateProductionSummary = useCallback(async () => {
     setIsSummaryLoading(true);
 
-    const summaryItemsMap = new Map<string, SummaryItem>();
+    // Estrutura hierárquica por pedido
+    const pedidoSummaryMap = new Map<string, {
+      pedidoId: string;
+      pedidoNumero: string;
+      items: SummaryItem[];
+    }>();
 
     // Helper to get or create a SummaryItem
     const getOrCreateSummaryItem = (
@@ -26,34 +31,52 @@ export const useProductionSummary = ({
       productSku: string,
       name: string,
       type: SummaryItem['tipo'],
-      level: number
+      level: number,
+      pedidoId: string
     ): SummaryItem => {
-      const key = `${type}-${documentId}`;
-      if (!summaryItemsMap.has(key)) {
-        const { estoqueTotal } = getStockForProduct(
-          documentId, type, allProducts.pecas, allProducts.partes, allProducts.insumos,
-          allProducts.modelos, allProducts.kits, allProducts.filamentGroups,
-          allProducts.locaisProdutos, allProducts.locaisInsumos, allProducts.recipientes
-        );
-        summaryItemsMap.set(key, {
-          documentId: documentId,
-          sku: productSku,
-          produtoNome: name,
-          tipo: type,
-          emEstoque: estoqueTotal,
-          necessario: 0,
-          aguardando: 0,
-          emProducao: 0,
-          emMontagemPeca: 0,
-          emMontagemModelo: 0,
-          emMontagemKit: 0,
-          processandoEmbalagem: 0,
-          finalizado: 0,
-          children: [],
-          level: level,
+      if (!pedidoSummaryMap.has(pedidoId)) {
+        pedidoSummaryMap.set(pedidoId, {
+          pedidoId,
+          pedidoNumero: pedidos.find(p => p.id === pedidoId)?.numero || pedidoId,
+          items: []
         });
       }
-      return summaryItemsMap.get(key)!;
+
+      const pedidoData = pedidoSummaryMap.get(pedidoId)!;
+      const existingItem = pedidoData.items.find(item => 
+        item.documentId === documentId && item.tipo === type
+      );
+
+      if (existingItem) {
+        return existingItem;
+      }
+
+      const { estoqueTotal } = getStockForProduct(
+        documentId, type, allProducts.pecas, allProducts.partes, allProducts.insumos,
+        allProducts.modelos, allProducts.kits, allProducts.filamentGroups,
+        allProducts.locaisProdutos, allProducts.locaisInsumos, allProducts.recipientes
+      );
+      
+      const newItem: SummaryItem = {
+        documentId: documentId,
+        sku: productSku,
+        produtoNome: name,
+        tipo: type,
+        emEstoque: estoqueTotal,
+        necessario: 0,
+        aguardando: 0,
+        emProducao: 0,
+        emMontagemPeca: 0,
+        emMontagemModelo: 0,
+        emMontagemKit: 0,
+        processandoEmbalagem: 0,
+        finalizado: 0,
+        children: [],
+        level: level,
+      };
+
+      pedidoData.items.push(newItem);
+      return newItem;
     };
 
     // Process all pedidos to build the hierarchical structure and calculate 'necessario'
@@ -62,18 +85,40 @@ export const useProductionSummary = ({
         let topLevelItem: SummaryItem | undefined;
 
         if (pedidoProduto.tipo === 'kit') {
-          topLevelItem = getOrCreateSummaryItem(pedidoProduto.produtoId, pedidoProduto.skuProduto, pedidoProduto.nomeProduto, 'kit', 0);
+          topLevelItem = getOrCreateSummaryItem(
+            pedidoProduto.produtoId, 
+            pedidoProduto.skuProduto, 
+            pedidoProduto.nomeProduto, 
+            'kit', 
+            0,
+            pedido.id
+          );
           topLevelItem.necessario += pedidoProduto.quantidade;
 
           pedidoProduto.modelosComponentes?.forEach(modeloComponente => {
-            const modeloItem = getOrCreateSummaryItem(modeloComponente.produtoId, modeloComponente.skuProduto, modeloComponente.nomeProduto, 'modelo', 1);
+            const modeloItem = getOrCreateSummaryItem(
+              modeloComponente.produtoId, 
+              modeloComponente.skuProduto, 
+              modeloComponente.nomeProduto, 
+              'modelo', 
+              1,
+              pedido.id
+            );
             modeloItem.necessario += pedidoProduto.quantidade * modeloComponente.quantidade;
             if (!topLevelItem?.children?.some(c => c.documentId === modeloItem.documentId)) {
               topLevelItem?.children?.push(modeloItem);
             }
 
             modeloComponente.pecasComponentes?.forEach(pecaComponente => {
-              const pecaItem = getOrCreateSummaryItem(pecaComponente.SKU, pecaComponente.SKU, pecaComponente.nome, 'peca', 2);
+              const pecaId = pecaComponente.id;
+              let pecaItem: SummaryItem;
+              
+              if (!pecaId) {
+                pecaItem = getOrCreateSummaryItem(pecaComponente.SKU, pecaComponente.SKU, pecaComponente.nome, 'peca', 2, pedido.id);
+              } else {
+                pecaItem = getOrCreateSummaryItem(pecaId, pecaComponente.SKU, pecaComponente.nome, 'peca', 2, pedido.id);
+              }
+              
               pecaItem.necessario += pedidoProduto.quantidade * modeloComponente.quantidade * pecaComponente.quantidade;
               if (!modeloItem?.children?.some(c => c.documentId === pecaItem.documentId)) {
                 modeloItem?.children?.push(pecaItem);
@@ -81,7 +126,7 @@ export const useProductionSummary = ({
 
               pecaComponente.gruposImpressao?.forEach(grupoImpressao => {
                 grupoImpressao.partes?.forEach(parteRef => {
-                  const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 3);
+                  const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 3, pedido.id);
                   parteItem.necessario += pedidoProduto.quantidade * modeloComponente.quantidade * pecaComponente.quantidade * parteRef.quantidade;
                   if (!pecaItem?.children?.some(c => c.documentId === parteItem.documentId)) {
                     pecaItem?.children?.push(parteItem);
@@ -91,19 +136,35 @@ export const useProductionSummary = ({
             });
           });
         } else if (pedidoProduto.tipo === 'modelo') {
-          topLevelItem = getOrCreateSummaryItem(pedidoProduto.produtoId, pedidoProduto.skuProduto, pedidoProduto.nomeProduto, 'modelo', 0);
+          topLevelItem = getOrCreateSummaryItem(
+            pedidoProduto.produtoId, 
+            pedidoProduto.skuProduto, 
+            pedidoProduto.nomeProduto, 
+            'modelo', 
+            0,
+            pedido.id
+          );
           topLevelItem.necessario += pedidoProduto.quantidade;
 
-          pedidoProduto.pecasComponentes?.forEach(pecaComponente => {
-            const pecaItem = getOrCreateSummaryItem(pecaComponente.SKU, pecaComponente.SKU, pecaComponente.nome, 'peca', 1);
+          pedidoProduto.pecasComponentes?.forEach((pecaComponente, index) => {
+            const pecaId = pecaComponente.id;
+            let pecaItem: SummaryItem;
+            
+            if (!pecaId) {
+              pecaItem = getOrCreateSummaryItem(pecaComponente.SKU, pecaComponente.SKU, pecaComponente.nome, 'peca', 1, pedido.id);
+            } else {
+              pecaItem = getOrCreateSummaryItem(pecaId, pecaComponente.SKU, pecaComponente.nome, 'peca', 1, pedido.id);
+            }
+            
             pecaItem.necessario += pedidoProduto.quantidade * pecaComponente.quantidade;
+            
             if (!topLevelItem?.children?.some(c => c.documentId === pecaItem.documentId)) {
               topLevelItem?.children?.push(pecaItem);
             }
 
             pecaComponente.gruposImpressao?.forEach(grupoImpressao => {
               grupoImpressao.partes?.forEach(parteRef => {
-                const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 2);
+                const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 2, pedido.id);
                 parteItem.necessario += pedidoProduto.quantidade * pecaComponente.quantidade * parteRef.quantidade;
                 if (!pecaItem?.children?.some(c => c.documentId === parteItem.documentId)) {
                   pecaItem?.children?.push(parteItem);
@@ -112,12 +173,19 @@ export const useProductionSummary = ({
             });
           });
         } else if (pedidoProduto.tipo === 'peca') {
-          topLevelItem = getOrCreateSummaryItem(pedidoProduto.produtoId, pedidoProduto.skuProduto, pedidoProduto.nomeProduto, 'peca', 0);
+          topLevelItem = getOrCreateSummaryItem(
+            pedidoProduto.produtoId, 
+            pedidoProduto.skuProduto, 
+            pedidoProduto.nomeProduto, 
+            'peca', 
+            0,
+            pedido.id
+          );
           topLevelItem.necessario += pedidoProduto.quantidade;
 
           pedidoProduto.gruposImpressao?.forEach(grupoImpressao => {
             grupoImpressao.partes?.forEach(parteRef => {
-              const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 1);
+              const parteItem = getOrCreateSummaryItem(parteRef.parteId, parteRef.sku, parteRef.nome, 'parte', 1, pedido.id);
               parteItem.necessario += pedidoProduto.quantidade * parteRef.quantidade;
               if (!topLevelItem?.children?.some(c => c.documentId === parteItem.documentId)) {
                 topLevelItem?.children?.push(parteItem);
@@ -185,56 +253,149 @@ export const useProductionSummary = ({
       }
     };
 
-    // Get all top-level items (kits, models, pecas that are not children)
-    const topLevelSummaryItems: SummaryItem[] = [];
-    summaryItemsMap.forEach(item => {
-      let isChild = false;
-      summaryItemsMap.forEach(potentialParent => {
-        if (potentialParent.children?.some(child => child.documentId === item.documentId && child.tipo === item.tipo)) {
-          isChild = true;
-        }
+    // Combine all items from all pedidos
+    const allSummaryItems: SummaryItem[] = [];
+    pedidoSummaryMap.forEach(pedidoData => {
+      // Get top-level items for this pedido
+      const pedidoItems = pedidoData.items.filter(item => {
+        let isChild = false;
+        pedidoData.items.forEach(potentialParent => {
+          if (potentialParent.children?.some(child => child.documentId === item.documentId && child.tipo === item.tipo)) {
+            isChild = true;
+          }
+        });
+        return !isChild && item.necessario > 0;
       });
-      if (!isChild && item.necessario > 0) {
-        topLevelSummaryItems.push(item);
-      }
+
+      // Sort items by type and name
+      pedidoItems.sort((a, b) => {
+        const typeOrder: { [key: string]: number } = { 'kit': 0, 'modelo': 1, 'peca': 2, 'parte': 3 };
+        if (typeOrder[a.tipo] !== typeOrder[b.tipo]) {
+          return typeOrder[a.tipo] - typeOrder[b.tipo];
+        }
+        return a.produtoNome.localeCompare(b.produtoNome);
+      });
+
+      // Recursively sort children
+      const sortChildren = (items: SummaryItem[]) => {
+        items.forEach(item => {
+          if (item.children && item.children.length > 0) {
+            item.children.sort((a, b) => {
+              const typeOrder: { [key: string]: number } = { 'kit': 0, 'modelo': 1, 'peca': 2, 'parte': 3 };
+              if (typeOrder[a.tipo] !== typeOrder[b.tipo]) {
+                return typeOrder[a.tipo] - typeOrder[b.tipo];
+              }
+              return a.produtoNome.localeCompare(b.produtoNome);
+            });
+            sortChildren(item.children);
+          }
+        });
+      };
+      sortChildren(pedidoItems);
+
+      // Calculate status for all items
+      pedidoItems.forEach(item => calculateStatus(item));
+
+      // Add pedido header item
+      const pedidoHeader: SummaryItem = {
+        documentId: pedidoData.pedidoId,
+        sku: `PED-${pedidoData.pedidoNumero}`,
+        produtoNome: `Pedido #${pedidoData.pedidoNumero}`,
+        tipo: 'kit' as const,
+        emEstoque: 0,
+        necessario: 0,
+        aguardando: 0,
+        emProducao: 0,
+        emMontagemPeca: 0,
+        emMontagemModelo: 0,
+        emMontagemKit: 0,
+        processandoEmbalagem: 0,
+        finalizado: 0,
+        children: pedidoItems,
+        level: 0,
+      };
+
+      allSummaryItems.push(pedidoHeader);
     });
 
-    // Sort top-level items by type (kits first, then models, then pecas) and then by name
-    topLevelSummaryItems.sort((a, b) => {
-      const typeOrder: { [key: string]: number } = { 'kit': 0, 'modelo': 1, 'peca': 2, 'parte': 3 };
-      if (typeOrder[a.tipo] !== typeOrder[b.tipo]) {
-        return typeOrder[a.tipo] - typeOrder[b.tipo];
-      }
-      return a.produtoNome.localeCompare(b.produtoNome);
+    // Sort pedidos by number
+    allSummaryItems.sort((a, b) => {
+      const numA = parseInt(a.sku.replace('PED-', ''));
+      const numB = parseInt(b.sku.replace('PED-', ''));
+      return numA - numB;
     });
 
-    // Recursively sort children
-    const sortChildren = (items: SummaryItem[]) => {
-      items.forEach(item => {
-        if (item.children && item.children.length > 0) {
-          item.children.sort((a, b) => {
-            const typeOrder: { [key: string]: number } = { 'kit': 0, 'modelo': 1, 'peca': 2, 'parte': 3 };
-            if (typeOrder[a.tipo] !== typeOrder[b.tipo]) {
-              return typeOrder[a.tipo] - typeOrder[b.tipo];
-            }
-            return a.produtoNome.localeCompare(b.produtoNome);
-          });
-          sortChildren(item.children);
-        }
-      });
-    };
-    sortChildren(topLevelSummaryItems);
-
-    // Calculate status for all items, starting from the top
-    topLevelSummaryItems.forEach(item => calculateStatus(item));
-
-    setProductionSummary(topLevelSummaryItems.filter(item => item.necessario > 0));
+    setProductionSummary(allSummaryItems);
     setIsSummaryLoading(false);
   }, [pedidos, allProducts, optimizedGroups, getStockForProduct]);
+
+  // Função para verificar estoque top-down
+  const verificarEstoqueTopDown = useCallback((item: SummaryItem): {
+    podeUsarEstoque: boolean;
+    nivelUsado?: number;
+    produtoId?: string;
+    produtoTipo?: SummaryItem['tipo'];
+    quantidadeDisponivel?: number;
+  } => {
+    // Nível 0: Verificar se o item atual tem estoque suficiente
+    const quantidadeNecessaria = item.necessario - item.finalizado;
+    if (quantidadeNecessaria <= 0) {
+      return { podeUsarEstoque: false };
+    }
+
+    // Verificar estoque do item atual
+    if (item.emEstoque >= quantidadeNecessaria) {
+      return {
+        podeUsarEstoque: true,
+        nivelUsado: item.level,
+        produtoId: item.documentId,
+        produtoTipo: item.tipo,
+        quantidadeDisponivel: item.emEstoque
+      };
+    }
+
+    // Se não tem estoque suficiente no nível atual, verificar filhos
+    if (item.children && item.children.length > 0) {
+      // Verificar se todos os filhos têm estoque suficiente
+      const filhosComEstoque = item.children.filter(child => {
+        const quantidadeNecessariaFilho = child.necessario - child.finalizado;
+        return child.emEstoque >= quantidadeNecessariaFilho;
+      });
+
+      // Se todos os filhos têm estoque suficiente
+      if (filhosComEstoque.length === item.children.length) {
+        return {
+          podeUsarEstoque: true,
+          nivelUsado: item.level + 1,
+          produtoId: item.documentId,
+          produtoTipo: item.tipo,
+          quantidadeDisponivel: 0 // Usando estoque dos filhos
+        };
+      }
+
+      // Se alguns filhos têm estoque, verificar netos recursivamente
+      for (const child of item.children) {
+        const resultadoFilho = verificarEstoqueTopDown(child);
+        if (resultadoFilho.podeUsarEstoque) {
+          return {
+            podeUsarEstoque: true,
+            nivelUsado: resultadoFilho.nivelUsado,
+            produtoId: resultadoFilho.produtoId,
+            produtoTipo: resultadoFilho.produtoTipo,
+            quantidadeDisponivel: resultadoFilho.quantidadeDisponivel
+          };
+        }
+      }
+    }
+
+    // Se chegou aqui, não há estoque suficiente em nenhum nível
+    return { podeUsarEstoque: false };
+  }, []);
 
   return {
     productionSummary,
     isSummaryLoading,
-    generateProductionSummary
+    generateProductionSummary,
+    verificarEstoqueTopDown
   };
 };
