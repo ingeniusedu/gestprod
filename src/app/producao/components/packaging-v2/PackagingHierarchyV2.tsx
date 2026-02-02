@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { ChevronDown, ChevronUp, CheckCircle, XCircle, Package, FileText, Wrench } from 'lucide-react';
 import { GrupoMontagem, ProdutoFinalNecessario, PackagingModelo, PackagingPeca } from '../../../types';
+import { useExpansionContext } from '../../../contexts/ExpansionContext';
 
 interface PackagingHierarchyV2Props {
   assemblyGroup: GrupoMontagem;
@@ -157,18 +158,15 @@ const HierarchyItem: React.FC<HierarchyItemProps> = ({
 };
 
 const PackagingHierarchyV2: React.FC<PackagingHierarchyV2Props> = ({ assemblyGroup, checkedItems, onToggleItem }) => {
-  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  // Usar ExpansionContext global em vez de estado local
+  const { toggleNode, getExpandedNodes } = useExpansionContext();
+  
+  // Usar assemblyGroup.id como pedidoId para o contexto
+  const pedidoId = assemblyGroup.id || '';
+  const expandedNodes = getExpandedNodes(pedidoId);
 
   const toggleExpanded = (itemId: string) => {
-    setExpandedItems(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(itemId)) {
-        newSet.delete(itemId);
-      } else {
-        newSet.add(itemId);
-      }
-      return newSet;
-    });
+    toggleNode(pedidoId, itemId);
   };
 
   const hierarchyItems = useMemo(() => {
@@ -271,17 +269,11 @@ const PackagingHierarchyV2: React.FC<PackagingHierarchyV2Props> = ({ assemblyGro
         children={children && children.length > 0 ? children.map((child: any) => renderItem(child, level + 1)) : undefined}
         level={level}
         itemType={type}
-        isExpanded={expandedItems.has(itemId)}
+        isExpanded={expandedNodes.has(itemId)}
         onToggleExpand={() => toggleExpanded(itemId)}
       />
     );
   };
-
-  // Initialize all items as collapsed
-  React.useEffect(() => {
-    // Start with empty set to keep all items collapsed
-    setExpandedItems(new Set());
-  }, [hierarchyItems]);
 
   return (
     <div className="space-y-2">

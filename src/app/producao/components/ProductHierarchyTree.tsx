@@ -1,6 +1,7 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { ChevronRight, ChevronDown, Package, Box, Square, Layers, CheckCircle, XCircle } from 'lucide-react';
 import { GrupoMontagem } from '../../types';
+import { useExpansionContext } from '../../contexts/ExpansionContext';
 
 export interface ProductHierarchyNode {
   id: string;
@@ -46,6 +47,13 @@ export interface ProductHierarchyNode {
     gruposMontagem: string[];
     gruposProducao: string[];
   };
+  
+  // Novos campos para rastreamento de atendimento
+  estaAtendido?: boolean;
+  quantidadeJaAtendida?: number;
+  origemAtendimento?: string[];
+  percentualAtendido?: number;
+  statusAtendimento?: 'nao_atendido' | 'parcialmente_atendido' | 'totalmente_atendido';
 }
 
 interface ProductHierarchyTreeProps {
@@ -66,6 +74,7 @@ interface ProductHierarchyTreeProps {
   }>;
   onRemovePendingOperation?: (operationId: string) => void;
   setHierarquiaCache?: (updater: (prev: any) => any) => void;
+  showAllStatus?: boolean; // Novo parâmetro para mostrar todos os itens independente do status
 }
 
 const HierarchyNode: React.FC<{
@@ -94,6 +103,10 @@ const HierarchyNode: React.FC<{
   const quantidadeAtendidaTotal = getQuantidadeAtendidaTotal ? getQuantidadeAtendidaTotal(node.id) : node.quantidadeAtendida;
   const percent = Math.min(100, (quantidadeAtendidaTotal / (node.quantidadeNecessaria || 1)) * 100);
 
+  // Determinar status de atendimento
+  const statusAtendimento = node.statusAtendimento || 
+    (percent >= 100 ? 'totalmente_atendido' : percent > 0 ? 'parcialmente_atendido' : 'nao_atendido');
+
   const getIcon = (tipo: string) => {
     switch (tipo) {
       case 'kit': return <Package className="h-4 w-4 text-purple-600" />;
@@ -103,22 +116,57 @@ const HierarchyNode: React.FC<{
     }
   };
 
+  // Obter cor de fundo baseada no status de atendimento
+  const getBackgroundColor = () => {
+    if (isSelected) return 'bg-blue-50 border border-blue-300';
+    if (isHovered) return 'bg-blue-25 border border-blue-200';
+    
+    switch (statusAtendimento) {
+      case 'totalmente_atendido':
+        return 'bg-green-50 border border-green-200 opacity-75';
+      case 'parcialmente_atendido':
+        return 'bg-yellow-50 border border-yellow-200';
+      default:
+        return 'hover:bg-gray-50 border border-transparent';
+    }
+  };
+
+  // Obter ícone de status
+  const getStatusIcon = () => {
+    switch (statusAtendimento) {
+      case 'totalmente_atendido':
+        return <CheckCircle className="h-4 w-4 text-green-600" />;
+      case 'parcialmente_atendido':
+        return <div className="h-4 w-4 rounded-full border-2 border-yellow-500" />;
+      default:
+        return <XCircle className="h-4 w-4 text-gray-400" />;
+    }
+  };
+
   return (
     <div className="select-none">
       <div
-        className={`flex items-center py-2 px-3 rounded-lg transition-all ${isSelected ? 'bg-blue-50 border border-blue-300' : isHovered ? 'bg-blue-25 border border-blue-200' : 'hover:bg-gray-50 border border-transparent'}`}
+        className={`flex items-center py-2 px-3 rounded-lg transition-all cursor-pointer ${getBackgroundColor()}`}
         style={{ marginLeft: `${depth * 24}px` }}
         onClick={() => onNodeClick?.(node)}
         onDragOver={(e) => { e.preventDefault(); onNodeDragOver?.(node); }}
         onDrop={() => onNodeDrop?.(node)}
       >
         {hasChildren ? (
-          <button onClick={(e) => { e.stopPropagation(); toggleNode(node.id); }} className="mr-2 text-gray-500">
+          <button 
+            onClick={(e) => { 
+              e.stopPropagation(); 
+              toggleNode(node.id); 
+            }} 
+            className="mr-2 p-1 hover:bg-gray-200 rounded transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title={isExpanded ? "Encolher" : "Expandir"}
+          >
             {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           </button>
         ) : <div className="w-6" />}
         
         <div className="mr-3">{getIcon(node.tipo)}</div>
+        <div className="mr-2">{getStatusIcon()}</div>
         
         <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between">
@@ -185,9 +233,13 @@ const HierarchyNode: React.FC<{
 
 export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
   nodes, gruposMontagem, gruposProducao, pedidoId, onNodeClick, onNodeDragOver, onNodeDrop, selectedNodeId, hoverNodeId,
-  getQuantidadeAtendidaTotal, getPendingOperationsForNode, onRemovePendingOperation, setHierarquiaCache
+  getQuantidadeAtendidaTotal, getPendingOperationsForNode, onRemovePendingOperation, setHierarquiaCache, showAllStatus = false
 }) => {
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  // Usar contexto global para estado de expansão
+  const { toggleNode: toggleNodeGlobal, expandAll, collapseAll, getExpandedNodes } = useExpansionContext();
+  
+  // Obter nós expandidos para o pedido atual
+  const expandedNodes = getExpandedNodes(pedidoId || '');
 
   // Algoritmo de construção de hierarquia unificada (montagem + produção)
   const hierarchyNodes = useMemo(() => {
@@ -232,7 +284,7 @@ export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
     const filteredMontagemGroups = gruposMontagem.filter(g => 
       g.pedidoId === pedidoId && 
       g.assemblyInstanceId && 
-      g.targetProductType !== 'produto_final'
+      (showAllStatus || g.targetProductType !== 'produto_final')
     );
 
     // Passo 4: Criar array unificado de instâncias
@@ -281,9 +333,9 @@ export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
     // Preencher Map de grupos de montagem
     gruposMontagem.forEach(grupo => {
       if (grupo.assemblyInstanceId && grupo.pedidoId === pedidoId) {
-        const existing = montagemByInstanceId.get(grupo.assemblyInstanceId) || [];
+        const existing = montagemByInstanceId.get(grupo.assemblyInstanceId!) || [];
         existing.push(grupo);
-        montagemByInstanceId.set(grupo.assemblyInstanceId, existing);
+        montagemByInstanceId.set(grupo.assemblyInstanceId!, existing);
       }
     });
 
@@ -293,12 +345,12 @@ export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
         const pedidoOrigem = grupo.pedidosOrigem?.find((p: any) => p.pedidoId === pedidoId);
         if (pedidoOrigem?.assemblyInstances) {
           pedidoOrigem.assemblyInstances.forEach((instance: any) => {
-            const existing = producaoByInstanceId.get(instance.assemblyInstanceId) || [];
+            const existing = producaoByInstanceId.get(instance.assemblyInstanceId!) || [];
             existing.push({
               ...grupo,
               assemblyInstance: instance
             });
-            producaoByInstanceId.set(instance.assemblyInstanceId, existing);
+            producaoByInstanceId.set(instance.assemblyInstanceId!, existing);
           });
         }
       });
@@ -357,7 +409,7 @@ export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
       const parts = instance.assemblyInstanceId.split('-');
       
       // Usar targetProductType direto do documento
-      const tipo = instance.targetProductType as 'kit' | 'modelo' | 'peca' | 'parte' || 'peca';
+      const tipo = (instance.targetProductType as 'kit' | 'modelo' | 'peca' | 'parte') || 'peca';
 
       const node: ProductHierarchyNode = {
         id: instance.assemblyInstanceId,
@@ -389,7 +441,7 @@ export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
       const parts = instance.assemblyInstanceId.split('-');
       if (parts.length > 3) {
         parentId = parts.slice(0, -2).join('-');
-        const parentNode = nodeMap.get(parentId);
+        const parentNode = nodeMap.get(parentId!);
           if (parentNode) {
             currentNode.parentId = parentId;
             parentNode.children = parentNode.children || [];
@@ -421,16 +473,15 @@ export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
     // Passo 8: Aplicar agregação de jornada a todos os nós raiz
     const rootNodesComJornada = rootNodes.map(node => agregarJornadaAoNo(node));
 
-
     return rootNodesComJornada;
   }, [nodes, gruposMontagem, gruposProducao, pedidoId]);
 
-  // Persistir hierarquia enriquecida no cache
-  useEffect(() => {
+  // Persistir hierarquia enriquecida no cache (sem dependência do estado de expansão)
+  useMemo(() => {
     if (hierarchyNodes.length > 0 && pedidoId && setHierarquiaCache) {
-      setHierarquiaCache(prev => ({
+      setHierarquiaCache((prev: any) => ({
         ...prev,
-        [pedidoId as string]: {
+        [pedidoId]: {
           hierarquia: hierarchyNodes, // ✅ COM JORNADA ENRIQUECIDA
           gruposProducao: gruposProducao || [], // ✅ ADICIONAR GRUPOS DE PRODUÇÃO
           gruposMontagem: gruposMontagem || [], // ✅ ADICIONAR GRUPOS DE MONTAGEM
@@ -438,37 +489,57 @@ export const ProductHierarchyTree: React.FC<ProductHierarchyTreeProps> = ({
         }
       }));
     }
-  }, [hierarchyNodes, pedidoId, setHierarquiaCache]);
+  }, [hierarchyNodes, pedidoId, gruposProducao, gruposMontagem, setHierarquiaCache]);
 
+  // Função wrapper para toggle usando contexto global
   const toggleNode = useCallback((nodeId: string) => {
-    setExpandedNodes(prev => {
-      const next = new Set(prev);
-      if (next.has(nodeId)) next.delete(nodeId); else next.add(nodeId);
-      return next;
-    });
-  }, []);
+    if (pedidoId) {
+      toggleNodeGlobal(pedidoId, nodeId);
+    }
+  }, [toggleNodeGlobal, pedidoId]);
 
-  const expandAll = () => {
-    const all = new Set<string>();
-    const collect = (ns: ProductHierarchyNode[]) => ns.forEach(n => { all.add(n.id); if (n.children) collect(n.children); });
-    collect(hierarchyNodes);
-    setExpandedNodes(all);
-  };
+  // Função wrapper para expandAll usando contexto global
+  const handleExpandAll = useCallback(() => {
+    if (pedidoId) {
+      const all = new Set<string>();
+      const collect = (ns: ProductHierarchyNode[]) => ns.forEach(n => { all.add(n.id); if (n.children) collect(n.children); });
+      collect(hierarchyNodes);
+      expandAll(pedidoId, Array.from(all));
+    }
+  }, [expandAll, pedidoId, hierarchyNodes]);
 
-  const collapseAll = useCallback(() => setExpandedNodes(new Set()), []);
+  // Função wrapper para collapseAll usando contexto global
+  const handleCollapseAll = useCallback(() => {
+    if (pedidoId) {
+      collapseAll(pedidoId);
+    }
+  }, [collapseAll, pedidoId]);
 
   return (
     <div className="bg-white rounded-lg border-0 border-gray-100">
       <div className="p-3 border-b border-gray-100 bg-gray-50 rounded-t-lg flex justify-between items-center">
         <div className="text-sm font-medium text-gray-700">Hierarquia de Produtos ({hierarchyNodes.length} raízes)</div>
         <div className="flex space-x-2">
-          <button onClick={expandAll} className="px-3 py-1 text-xs bg-white border border-gray-200 rounded hover:bg-gray-50">Expandir</button>
-          <button onClick={collapseAll} className="px-3 py-1 text-xs bg-white border border-gray-200 rounded hover:bg-gray-50">Colapsar</button>
+          <button onClick={handleExpandAll} className="px-3 py-1 text-xs bg-white border border-gray-200 rounded hover:bg-gray-50">Expandir</button>
+          <button onClick={handleCollapseAll} className="px-3 py-1 text-xs bg-white border border-gray-200 rounded hover:bg-gray-50">Colapsar</button>
         </div>
       </div>
       <div className="p-4 max-h-[500px] overflow-y-auto">
         {hierarchyNodes.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">Nenhuma hierarquia disponível</div>
+          <div className="text-center py-8">
+            <div className="text-gray-500 mb-2">
+              <Package className="h-12 w-12 mx-auto mb-2 text-gray-400" />
+              <p className="text-lg font-medium">Nenhum produto pendente de atendimento</p>
+              <p className="text-sm text-gray-400 mt-1">
+                Todos os itens deste pedido já foram atendidos ou não possuem grupos aguardando montagem.
+              </p>
+            </div>
+            <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-xs text-blue-700">
+                <strong>Dica:</strong> Itens aparecem aqui quando estão com status "aguardando" ou "aguardando montagem".
+              </p>
+            </div>
+          </div>
         ) : (
           hierarchyNodes.map(node => (
             <HierarchyNode

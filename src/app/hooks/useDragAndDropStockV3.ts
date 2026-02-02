@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { db } from '../services/firebase';
 import { 
   collection, 
@@ -78,6 +78,13 @@ export interface ProductHierarchyNode {
     gruposMontagem: string[];
     gruposProducao: string[];
   };
+  
+  // Novos campos para rastreamento de atendimento
+  estaAtendido?: boolean;
+  quantidadeJaAtendida?: number;
+  origemAtendimento?: string[];
+  percentualAtendido?: number;
+  statusAtendimento?: 'nao_atendido' | 'parcialmente_atendido' | 'totalmente_atendido';
 }
 
 interface PedidoComHierarquia {
@@ -85,6 +92,7 @@ interface PedidoComHierarquia {
   hierarquia: ProductHierarchyNode[];
   gruposProducao: ProductionGroup[];
   gruposMontagem: GrupoMontagem[];
+  needsRefresh?: boolean;
 }
 
 export interface PendingOperation {
@@ -97,7 +105,12 @@ export interface PendingOperation {
   pedidoId: string;
 }
 
-export const useDragAndDropStockV3 = () => {
+interface UseDragAndDropStockV3Options {
+  showAllStatuses?: boolean;
+}
+
+export const useDragAndDropStockV3 = (options: UseDragAndDropStockV3Options = {}) => {
+  const { showAllStatuses = false } = options;
   const [pedidosIniciais, setPedidosIniciais] = useState<Pedido[]>([]);
   const [hierarquiaCache, setHierarquiaCache] = useState<Record<string, PedidoComHierarquia>>({});
   const [stockItems, setStockItems] = useState<StockItem[]>([]);
@@ -272,6 +285,64 @@ export const useDragAndDropStockV3 = () => {
     return atendimentos;
   }, []);
 
+  // Função para filtrar grupos por status
+  const filtrarGruposPorStatus = useCallback((
+    gruposMontagem: GrupoMontagem[],
+    gruposProducao: ProductionGroup[]
+  ): {
+    gruposMontagemFiltrados: GrupoMontagem[];
+    gruposProducaoFiltrados: ProductionGroup[];
+  } => {
+    // Status que permitem atendimento por estoque
+    const statusPermitidos = ['aguardando', 'aguardando_montagem', 'pendente', 'pendente_montagem'];
+    
+    // Filtrar grupos de montagem
+    const gruposMontagemFiltrados = gruposMontagem.filter(grupo => {
+      // Verificar status principal do grupo
+      if (grupo.status && !statusPermitidos.includes(grupo.status)) {
+        return false;
+      }
+      
+      // Verificar se tem assemblyInstanceId (só grupos com assemblyInstanceId podem ser atendidos)
+      if (!grupo.assemblyInstanceId) {
+        return false;
+      }
+      
+      // Verificar se não é produto final
+      if (grupo.targetProductType === 'produto_final') {
+        return false;
+      }
+      
+      return true;
+    });
+    
+    // Filtrar grupos de produção
+    const gruposProducaoFiltrados = gruposProducao.filter(grupo => {
+      // Verificar status principal do grupo
+      if (grupo.status && !statusPermitidos.includes(grupo.status)) {
+        return false;
+      }
+      
+      // Verificar se tem pedidosOrigem com assemblyInstances
+      if (!grupo.pedidosOrigem || grupo.pedidosOrigem.length === 0) {
+        return false;
+      }
+      
+      return true;
+    });
+    
+    console.log('DEBUG [filtrarGruposPorStatus]:');
+    console.log('  - Grupos montagem originais:', gruposMontagem.length);
+    console.log('  - Grupos montagem filtrados:', gruposMontagemFiltrados.length);
+    console.log('  - Grupos produção originais:', gruposProducao.length);
+    console.log('  - Grupos produção filtrados:', gruposProducaoFiltrados.length);
+    
+    return {
+      gruposMontagemFiltrados,
+      gruposProducaoFiltrados
+    };
+  }, []);
+
   const buildHierarchyFromAssemblyGroups = useCallback((
     gruposMontagem: GrupoMontagem[],
     pedido: Pedido
@@ -321,6 +392,31 @@ export const useDragAndDropStockV3 = () => {
       // Extract hierarchical context
       const context = extractContextFromParsed(parsed);
       
+      // Verificar status de atendimento
+      const statusAtendimento = verificarStatusAtendimento(
+        {
+          id: grupo.assemblyInstanceId,
+          nome: grupo.targetProductName || `Grupo ${grupo.id}`,
+          tipo: context.tipo,
+          targetProductId: grupo.targetProductId || context.targetId,
+          quantidadeNecessaria: 1,
+          quantidadeAtendida: calcularQuantidadeAtendida(grupo),
+          nivel: 1,
+          parentId: undefined,
+          children: [],
+          pedidoId: pedido.id,
+          parentModeloId: context.parentModeloId,
+          parentKitId: context.parentKitId,
+          assemblyInstanceId: grupo.assemblyInstanceId,
+          temGrupoMontagem: true,
+          temGrupoProducao: false,
+          dadosCompletos: true,
+          atendimentoViaCascata: []
+        },
+        gruposMontagem,
+        pedido.id
+      );
+
       // Create node with all essential fields
       const node: ProductHierarchyNode = {
         id: grupo.assemblyInstanceId,
@@ -536,14 +632,50 @@ export const useDragAndDropStockV3 = () => {
         fetchGruposMontagemParaPedido(pedido.id),
         fetchGruposProducaoParaPedido(pedido.id)
       ]);
+      
+      let gruposMontagemParaCache = gruposMontagem;
+      let gruposProducaoParaCache = gruposProducao;
+
+      if (!showAllStatuses) {
+        const { gruposMontagemFiltrados, gruposProducaoFiltrados } = filtrarGruposPorStatus(gruposMontagem, gruposProducao);
+        gruposMontagemParaCache = gruposMontagemFiltrados;
+        gruposProducaoParaCache = gruposProducaoFiltrados;
+      }
+      
       const hierarquia: ProductHierarchyNode[] = []; // Será construída dinamicamente no ProductHierarchyTree
       setHierarquiaCache(prev => ({
         ...prev,
-        [pedido.id]: { pedido, hierarquia, gruposProducao, gruposMontagem }
+        [pedido.id]: { pedido, hierarquia, gruposProducao: gruposProducaoParaCache, gruposMontagem: gruposMontagemParaCache }
       }));
     };
     carregarHierarquia();
-  }, [selectedPedidoId, pedidosIniciais, fetchGruposMontagemParaPedido, fetchGruposProducaoParaPedido, buildHierarchyFromAssemblyGroups]);
+  }, [selectedPedidoId, pedidosIniciais]);
+
+  // Listener para lançamentos de produção em tempo real (VERSÃO NÃO-DESTRUTIVA)
+  useEffect(() => {
+    if (!selectedPedidoId) return;
+    
+    const q = query(
+      collection(db, 'lancamentosProducao'),
+      where('tipoEvento', '==', 'uso_estoque'),
+      where('payload.pedidoId', '==', selectedPedidoId)
+    );
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added' || change.type === 'modified') {
+          const lancamento = change.doc.data();
+          console.log('DEBUG: Novo lançamento de uso de estoque detectado (não invalidando cache):', lancamento);
+          
+          // ✅ NÃO INVALIDAR MAIS O CACHE - Preservar estado de expansão
+          // Apenas logar o lançamento, sem forçar reconstrução
+          console.log('Lançamento detectado, mantendo cache intacto para preservar estado de expansão');
+        }
+      });
+    });
+    
+    return () => unsubscribe();
+  }, [selectedPedidoId]);
 
   const processarEstoque = useCallback((pecas: Peca[] | null, modelos: Modelo[] | null, kits: Kit[] | null) => {
     const stock: StockItem[] = [];
@@ -581,7 +713,7 @@ export const useDragAndDropStockV3 = () => {
     }));
   }, [selectedPedidoId, pendingOperations]);
 
-  useEffect(() => { atualizarEstoqueVisual(); }, [pendingOperations, selectedPedidoId, atualizarEstoqueVisual]);
+  useEffect(() => { atualizarEstoqueVisual(); }, [pendingOperations, selectedPedidoId]);
 
   const getStockForSelectedPedido = useCallback((): StockItem[] => {
     if (!selectedPedidoId) return stockItems;
@@ -593,7 +725,7 @@ export const useDragAndDropStockV3 = () => {
     return stockItems.filter(i => ids.has(i.produtoId));
   }, [selectedPedidoId, hierarquiaCache, stockItems]);
 
-  const getPedidoSelecionado = useCallback(() => selectedPedidoId ? hierarquiaCache[selectedPedidoId] : undefined, [selectedPedidoId, hierarquiaCache]);
+  const getPedidoSelecionado = useMemo(() => selectedPedidoId ? hierarquiaCache[selectedPedidoId] : undefined, [selectedPedidoId, hierarquiaCache]);
 
   // Helper function to extract parent context from node hierarchy
   const extractParentContext = useCallback((node: ProductHierarchyNode, hierarchy: ProductHierarchyNode[]): {
@@ -1503,6 +1635,92 @@ export const useDragAndDropStockV3 = () => {
     return false;
   }, []);
 
+  // Função para verificar status de atendimento de um nó
+  const verificarStatusAtendimento = useCallback((
+    node: ProductHierarchyNode,
+    gruposMontagem: GrupoMontagem[],
+    pedidoId: string
+  ): {
+    estaAtendido: boolean;
+    quantidadeJaAtendida: number;
+    origemAtendimento: string[];
+    percentualAtendido: number;
+    statusAtendimento: 'nao_atendido' | 'parcialmente_atendido' | 'totalmente_atendido';
+  } => {
+    let quantidadeJaAtendida = 0;
+    const origemAtendimento: string[] = [];
+
+    // Verificar atendimento nos grupos de montagem
+    const gruposRelevantes = gruposMontagem.filter(grupo => {
+      if (grupo.targetProductId !== node.targetProductId) return false;
+      
+      // Verificar contexto hierárquico
+      const nodeContext = extractParentContext(node, hierarquiaCache[pedidoId]?.hierarquia || []);
+      const contextMatches = 
+        (!nodeContext.parentModeloId || grupo.parentModeloId === nodeContext.parentModeloId) &&
+        (!nodeContext.parentKitId || grupo.parentKitId === nodeContext.parentKitId);
+      
+      return contextMatches;
+    });
+
+    gruposRelevantes.forEach(grupo => {
+      if (grupo.pecasNecessarias) {
+        grupo.pecasNecessarias.forEach((peca: any) => {
+          if (peca.pecaId === node.targetProductId && peca.atendimentoDetalhado) {
+            peca.atendimentoDetalhado.forEach((atendimento: any) => {
+              quantidadeJaAtendida += atendimento.quantidade;
+              origemAtendimento.push(`${atendimento.origem} (${new Date(atendimento.timestamp.seconds * 1000).toLocaleDateString()})`);
+            });
+          }
+        });
+      } else if (grupo.modelosNecessarios) {
+        grupo.modelosNecessarios.forEach((modelo: any) => {
+          if (modelo.modeloId === node.targetProductId && modelo.atendimentoDetalhado) {
+            modelo.atendimentoDetalhado.forEach((atendimento: any) => {
+              quantidadeJaAtendida += atendimento.quantidade;
+              origemAtendimento.push(`${atendimento.origem} (${new Date(atendimento.timestamp.seconds * 1000).toLocaleDateString()})`);
+            });
+          }
+        });
+      } else if (grupo.produtosFinaisNecessarios) {
+        grupo.produtosFinaisNecessarios.forEach((produto: any) => {
+          if (produto.produtoId === node.targetProductId && (produto as any).atendimentoDetalhado) {
+            (produto as any).atendimentoDetalhado.forEach((atendimento: any) => {
+              quantidadeJaAtendida += atendimento.quantidade;
+              origemAtendimento.push(`${atendimento.origem} (${new Date(atendimento.timestamp.seconds * 1000).toLocaleDateString()})`);
+            });
+          }
+        });
+      }
+    });
+
+    // Verificar atendimento via lançamentos de uso de estoque
+    // TODO: Implementar consulta a lancamentosProducao quando necessário
+
+    const percentualAtendido = node.quantidadeNecessaria > 0 
+      ? (quantidadeJaAtendida / node.quantidadeNecessaria) * 100 
+      : 0;
+
+    const estaAtendido = quantidadeJaAtendida >= node.quantidadeNecessaria;
+    
+    let statusAtendimento: 'nao_atendido' | 'parcialmente_atendido' | 'totalmente_atendido';
+    if (percentualAtendido === 0) {
+      statusAtendimento = 'nao_atendido';
+    } else if (percentualAtendido >= 100) {
+      statusAtendimento = 'totalmente_atendido';
+    } else {
+      statusAtendimento = 'parcialmente_atendido';
+    }
+
+    return {
+      estaAtendido,
+      quantidadeJaAtendida,
+      origemAtendimento: [...new Set(origemAtendimento)], // Remover duplicatas
+      percentualAtendido,
+      statusAtendimento
+    };
+  }, [extractParentContext, hierarquiaCache]);
+
   const enrichNodeWithJourney = useCallback(async (node: ProductHierarchyNode, pedidoId: string): Promise<ProductHierarchyNode> => {
     const cache = hierarquiaCache[pedidoId];
     if (!cache) return node;
@@ -1514,6 +1732,9 @@ export const useDragAndDropStockV3 = () => {
     console.log('DEBUG: Node level:', node.nivel, 'parentId:', node.parentId);
     console.log('DEBUG: Available production groups:', allProductionGroups.length);
     console.log('DEBUG: Available assembly groups:', allAssemblyGroups.length);
+
+    // Verificar status de atendimento
+    const statusAtendimento = verificarStatusAtendimento(node, allAssemblyGroups, pedidoId);
 
     // Find production groups that contain instances matching this node's targetProductId
     const relevantProductionGroups = allProductionGroups.filter(pg => {

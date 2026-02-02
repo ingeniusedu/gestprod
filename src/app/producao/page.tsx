@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { db, auth } from '../services/firebase'; // Import auth
-import { collection, getDocs, doc, getDoc, updateDoc, query, where, Timestamp, addDoc, writeBatch, serverTimestamp, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, updateDoc, Timestamp, addDoc, writeBatch, serverTimestamp, onSnapshot, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth'; // Import onAuthStateChanged
 import { Hourglass, Package, CheckCircle, XCircle, Play, Pause, Spool, MapPin, Users, PlusCircle, ChevronUp, ChevronDown } from 'lucide-react';
-import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto, PecaParte, ProductionGroupFilamento, ProductionGroupOutroInsumo, Historico, Configuracoes, DashboardMetrics, AlertaEstoque, Produto, Servico, LancamentoServico, ItemToDebit, OptimizedGroup, GrupoMontagem, LancamentoMontagem, ProdutoFinalNecessario, PackagingModelo, PackagingPeca, PedidoProduto, AtendimentoDetalhadoItem, AtendimentoDetalhadoItem as AtendimentoDetalhadoItemType, UsoEstoquePayload } from '../types'; // Import AtendimentoDetalhadoItemType and UsoEstoquePayload
+import { Pedido, ProductionGroup, Peca, Modelo, Kit, Insumo, Parte, PosicaoEstoque, GrupoDeFilamento, PecaInsumo, GrupoImpressao, LancamentoInsumo, LancamentoProduto, PecaParte, ProductionGroupFilamento, ProductionGroupOutroInsumo, Historico, Configuracoes, DashboardMetrics, AlertaEstoque, Produto, Servico, LancamentoServico, ItemToDebit, OptimizedGroup, GrupoMontagem, LancamentoMontagem, ProdutoFinalNecessario, PackagingModelo, PackagingPeca, PedidoProduto, AtendimentoDetalhadoItem, AtendimentoDetalhadoItemType, UsoEstoquePayload } from '../types'; // Import AtendimentoDetalhadoItemType and UsoEstoquePayload
 import toast from 'react-hot-toast';
 import { LocalProduto, LocalInsumo, Recipiente } from '../types/mapaEstoque';
 import { v4 as uuidv4 } from 'uuid';
@@ -27,8 +27,6 @@ import { useAssemblyGroups } from '../hooks/useAssemblyGroups'; // Import new ho
 import { formatTime, formatFilament, calculateEffectiveQuantityFulfilledByComponents, generateProductionGroupsForProduct, getGroupStockStatus, canConcludePedido, formatLocation } from '../utils/producaoUtils';
 import ProcessandoEmbalagemV2 from './components/ProcessandoEmbalagemV2';
 import CompletedOrdersTable from './components/CompletedOrdersTable';
-import { UsoEstoqueTab } from './components/UsoEstoqueTab';
-import { UsoEstoqueTabV2 } from './components/UsoEstoqueTabV2';
 import { UsoEstoqueTabV3 } from './components/UsoEstoqueTabV3';
 
 // 🆕 FUNÇÃO AUXILIAR PARA BUSCAR PEDIDO RELACIONADO
@@ -148,10 +146,10 @@ const findRelatedPedidoForSummaryItem = (item: SummaryItem, pedidos: Pedido[]): 
       } else if (produto.tipo === 'modelo' && produto.pecasComponentes) {
         if (produto.pecasComponentes.some(peca => peca.id === item.documentId)) {
           console.log('✅ Pedido encontrado via hierarquia (modelo -> peca):', {
-            pedidoId: pedido.id,
-            pedidoNumero: pedido.numero
-          });
-          return { pedidoId: pedido.id, nivelUsado: item.level + 1 }; // modelo (0) -> peca (1)
+              pedidoId: pedido.id,
+              pedidoNumero: pedido.numero
+            });
+            return { pedidoId: pedido.id, nivelUsado: item.level + 1 }; // modelo (0) -> peca (1)
         }
       } else if (produto.tipo === 'peca' && produto.gruposImpressao) {
         for (const grupo of produto.gruposImpressao) {
@@ -176,7 +174,7 @@ const findRelatedPedidoForSummaryItem = (item: SummaryItem, pedidos: Pedido[]): 
 
 export default function Producao() {
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
-  const [activeTab, setActiveTab] = useState<'visao_geral' | 'aguardando' | 'em_producao' | 'em_montagem_peca' | 'em_montagem_modelo' | 'em_montagem_kit' | 'processando_embalagem' | 'processando_embalagem_v2' | 'finalizados' | 'uso_estoque' | 'uso_estoque_v2' | 'uso_estoque_v3'>('visao_geral');
+  const [activeTab, setActiveTab] = useState<'visao_geral' | 'aguardando' | 'em_producao' | 'em_montagem_peca' | 'em_montagem_modelo' | 'em_montagem_kit' | 'processando_embalagem' | 'processando_embalagem_v2' | 'finalizados' | 'uso_estoque'>('visao_geral');
   const [filamentColors, setFilamentColors] = useState<Record<string, string>>({});
   const [displayGroups, setDisplayGroups] = useState<ProductionGroup[]>([]);
   const [allInsumos, setAllInsumos] = useState<Insumo[]>([]);
@@ -203,7 +201,7 @@ export default function Producao() {
   const [isPackagingStarted, setIsPackagingStarted] = useState<Record<string, boolean>>({});
   const [checkedItems, setCheckedItems] = useState<Record<string, Record<string, boolean>>>({}); // { assemblyGroupId: { itemId: boolean } }
 
-  const [itemToDebit, setItemToDebit] = useState<ItemToDebit | null>(null); // Use the imported ItemToDebit
+  const [itemToDebit, setItemToDebit] = useState<ItemToDebit | null>(null); // Use imported ItemToDebit
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   const { enrichPosicoesEstoque, getStockForProduct } = useStockCalculations();
@@ -548,7 +546,7 @@ export default function Producao() {
   const handleStockSelection = useCallback(async (debits: { selectedPosition: PosicaoEstoque; quantityToDebit: number }[]) => {
     if (!itemToDebit) return;
 
-    const { id, nome, type, pedidoId, nivelUsado } = itemToDebit as any; // Cast para acessar nivelUsado
+    const { id, nome, type, pedidoId, nivelUsado } = itemToDebit as unknown as { id: string; nome: string; type: string; pedidoId?: string; nivelUsado: number };
     let totalDebited = 0;
 
     if (!['parte', 'peca', 'modelo', 'kit'].includes(type)) {
@@ -730,7 +728,7 @@ export default function Producao() {
 
         await updateDoc(pedidoRef, { produtos: cleanObject(updatedProdutos) });
         setIsExcessModalOpen(false);
-        // No need to call refetchAllData here, as onSnapshot listeners will handle updates
+        // No need to call refetchAllData here, as onSnapshot listeners handle updates
         toast.success("Excedente enviado para montagem com sucesso!");
 
     } catch (error) {
@@ -738,7 +736,6 @@ export default function Producao() {
       toast.error("Falha ao enviar excedente para montagem.");
     }
   }, [pedidos, db, cleanObject, setIsExcessModalOpen]);
-
 
   const getFilteredDisplayGroups = useCallback((pedidosList: Pedido[]): Pedido[] | ProductionGroup[] | OptimizedGroup[] | GrupoMontagem[] => {
     if (activeTab === 'aguardando') {
@@ -810,7 +807,7 @@ export default function Producao() {
       }));
       
       toast.success("Solicitação de conclusão de montagem de peça enviada com sucesso! O status será atualizado em breve.");
-      // No need to call refetchAllData here, as onSnapshot listeners will handle updates
+      // No need to call refetchAllData here, as onSnapshot listeners handle updates
       
     } catch (error) {
       console.error("Erro ao solicitar conclusão de montagem de peça:", error);
@@ -830,7 +827,7 @@ export default function Producao() {
         ? 'entrada_modelo_montagem_kit' 
         : 'entrada_modelo_embalagem';
 
-      const payload: Record<string, any> = {
+      const payload: Record<string, unknown> = {
         assemblyGroupId: assemblyGroup.id ?? '', // Use nullish coalescing
         assemblyInstanceId: assemblyGroup.assemblyInstanceId ?? null, // Use nullish coalescing
         targetProductId: assemblyGroup.targetProductId ?? '', // Use nullish coalescing
@@ -860,7 +857,7 @@ export default function Producao() {
       }));
       
       toast.success("Montagem de modelo concluída com sucesso!");
-      // No need to call refetchAllData here, as onSnapshot listeners will handle updates
+      // No need to call refetchAllData here, as onSnapshot listeners handle updates
       
     } catch (error) {
       console.error("Erro ao concluir montagem de modelo:", error);
@@ -875,7 +872,7 @@ export default function Producao() {
     }
 
     try {
-      const payload: Record<string, any> = {
+      const payload: Record<string, unknown> = {
         assemblyGroupId: assemblyGroup.id ?? '',
         assemblyInstanceId: assemblyGroup.assemblyInstanceId ?? null,
         targetProductId: assemblyGroup.targetProductId ?? '',
@@ -1031,7 +1028,7 @@ export default function Producao() {
         if (kitItem.modelos) {
           totalExpectedItems += kitItem.modelos.length;
           // Contar peças dentro dos modelos
-          kitItem.modelos.forEach((modelo: PackagingModelo) => {
+          kitItem.modelos.forEach((modelo: any) => {
             if (modelo.pecas) {
               totalExpectedItems += modelo.pecas.length;
             }
@@ -1105,7 +1102,7 @@ export default function Producao() {
         if (kitItem.modelos) {
           totalExpectedItems += kitItem.modelos.length;
           // Contar peças dentro dos modelos
-          kitItem.modelos.forEach((modelo: PackagingModelo) => {
+          kitItem.modelos.forEach((modelo: any) => {
             if (modelo.pecas) {
               totalExpectedItems += modelo.pecas.length;
             }
@@ -1210,6 +1207,15 @@ export default function Producao() {
             Visão Geral
           </button>
           <button
+            onClick={() => setActiveTab('uso_estoque')}
+            className={`${activeTab === 'uso_estoque'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+          >
+            Uso Estoque
+          </button>
+          <button
             onClick={() => setActiveTab('aguardando')}
             className={`${activeTab === 'aguardando'
               ? 'border-blue-500 text-blue-600'
@@ -1272,33 +1278,6 @@ export default function Producao() {
           >
             Finalizados
           </button>
-          <button
-            onClick={() => setActiveTab('uso_estoque')}
-            className={`${activeTab === 'uso_estoque'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          >
-            Uso de Estoque (Legado)
-          </button>
-          <button
-            onClick={() => setActiveTab('uso_estoque_v2')}
-            className={`${activeTab === 'uso_estoque_v2'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          >
-            Uso de Estoque V2
-          </button>
-          <button
-            onClick={() => setActiveTab('uso_estoque_v3')}
-            className={`${activeTab === 'uso_estoque_v3'
-              ? 'border-blue-500 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          >
-            Uso de Estoque V3
-          </button>
         </nav>
       </div>
 
@@ -1309,6 +1288,10 @@ export default function Producao() {
             isLoading={isSummaryLoading}
             onUseStock={handleUseStock}
           />
+        )}
+
+        {activeTab === 'uso_estoque' && (
+          <UsoEstoqueTabV3 />
         )}
 
         {activeTab === 'aguardando' && (
@@ -1543,7 +1526,7 @@ export default function Producao() {
                             {peca.nome}: Necessário {peca.quantidade}, Atendido {peca.quantidadeAtendida || 0}, Estoque Atual {peca.estoqueAtual || 0}
                             {peca.atendimentoDetalhado && peca.atendimentoDetalhado.length > 0 && (
                               <ul className="list-disc list-inside ml-4 text-xs text-gray-500">
-                                {peca.atendimentoDetalhado.map((atendimento: { origem: string; quantidade: number; timestamp: any }, attIndex: number) => (
+                                {peca.atendimentoDetalhado.map((atendimento: AtendimentoDetalhadoItemType, attIndex: number) => (
                                   <li key={attIndex}>
                                     Origem: {atendimento.origem}, Quantidade: {atendimento.quantidade}, Data: {new Date(atendimento.timestamp.seconds * 1000).toLocaleString()}
                                   </li>
@@ -1604,7 +1587,7 @@ export default function Producao() {
                             {modelo.nome}: Necessário {modelo.quantidade}, Atendido {calculatedQuantidadeAtendida}, Estoque Atual {modelo.estoqueAtual || 0}
                             {modelo.atendimentoDetalhado && modelo.atendimentoDetalhado.length > 0 && (
                               <ul className="list-disc list-inside ml-4 text-xs text-gray-500">
-                                {modelo.atendimentoDetalhado.map((atendimento: AtendimentoDetalhadoItemType, attIndex: number) => (
+                                {modelo.atendimentoDetalhado.map((atendimento: { origem: string; quantidade: number; timestamp: any }, attIndex: number) => (
                                   <li key={attIndex}>
                                     Origem: {atendimento.origem}, Quantidade: {atendimento.quantidade}, Data: {new Date(atendimento.timestamp.seconds * 1000).toLocaleString()}
                                   </li>
@@ -1667,12 +1650,12 @@ export default function Producao() {
                 // Se relatedPedido for null, usar o assemblyGroupId como fallback
                 const finalPedidoId = relatedPedido?.id || assemblyGroupId;
                 
-  console.log('🔍 DEBUG - Lógica unificada de pedidoId:', {
-    assemblyGroupId,
-    finalPedidoId,
-    relatedPedidoFound: !!relatedPedido,
-    pedidoNumero: relatedPedido?.numero
-  });
+                console.log('🔍 DEBUG - Lógica unificada de pedidoId:', {
+                    assemblyGroupId,
+                    finalPedidoId,
+                    relatedPedidoFound: !!relatedPedido,
+                    pedidoNumero: relatedPedido?.numero
+                  });
                 
                 const canConcludePackaging = (assemblyGroup.produtosFinaisNecessarios ?? []).every(produto =>
                   (produto.quantidadeAtendida || 0) >= produto.quantidade
@@ -1790,18 +1773,6 @@ export default function Producao() {
         {activeTab === 'finalizados' && (
           <CompletedOrdersTable pedidos={getFilteredDisplayGroups(pedidos) as Pedido[]} />
         )}
-
-        {activeTab === 'uso_estoque' && (
-          <UsoEstoqueTab />
-        )}
-
-        {activeTab === 'uso_estoque_v2' && (
-          <UsoEstoqueTabV2 />
-        )}
-
-        {activeTab === 'uso_estoque_v3' && (
-          <UsoEstoqueTabV3 />
-        )}
       </div>
 
       <ProductionLaunchModal
@@ -1828,12 +1799,12 @@ export default function Producao() {
           pecaTipo={excessPartData.pecaTipo}
           onLaunchSuccess={() => {
             setIsExcessModalOpen(false);
-            // refetchAllData(); // Removed as onSnapshot listeners handle updates
+          // refetchAllData(); // Removed as onSnapshot listeners handle updates
           }}
           onSendToAssembly={(partId, quantity) => {
             // The pecaId is now available in excessPartData.pecaId
-            // We need to ensure excessPartData.pecaId is passed as the first argument
-            // and partId as the second argument to handleSendToAssembly.
+            // We need to ensure excessPartData.pecaId is passed as first argument
+            // and partId as second argument to handleSendToAssembly.
             if (excessPartData?.pecaId) {
               handleSendToAssembly(excessPartData.pecaId, partId, quantity);
             } else {
@@ -1873,7 +1844,7 @@ export default function Producao() {
             // Create a map of existing insumos to avoid duplicates
             const existingInsumoMap = new Map((selectedPackagingInsumos[assemblyGroupId] || []).map(item => [item.insumo.id, item]));
             
-            // Add new insumos, replacing any existing ones with the same ID
+            // Add new insumos, replacing any existing ones with same ID
             selectedInsumos.forEach(newItem => {
               existingInsumoMap.set(newItem.insumo.id, newItem);
             });
@@ -1886,7 +1857,7 @@ export default function Producao() {
           }}
           initialSelectedInsumos={
             // Buscar insumos pelo assemblyGroupId correspondente
- (() => {
+            (() => {
               const assemblyGroup = assemblyGroups.find(ag => 
                 ag.produtosFinaisNecessarios?.some(pf => 
                   pf.produtoId === selectedPedidoForPackaging?.produtos[0]?.produtoId

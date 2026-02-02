@@ -117,8 +117,28 @@ export interface Pedido {
   numero: string;
   status: string;
   produtos: PedidoProduto[];
+  cliente?: string; // Adicionado para exibir na embalagem
   dataCriacao: Timestamp;
   dataConclusao?: Timestamp;
+}
+
+export interface InsumoEmbalagem {
+  id: string;
+  nome: string;
+  tipo: 'caixa' | 'plastico' | 'etiqueta' | 'outro';
+  quantidade: number;
+  unidade: string;
+}
+
+export interface TempoEmbalagem {
+  inicio: Date | null;
+  fim: Date | null;
+  duracao: number; // em segundos
+  pausas: Array<{
+    inicio: Date;
+    fim: Date | null;
+    motivo: string;
+  }>;
 }
 
 export interface PedidoProduto {

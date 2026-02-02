@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Search, Filter, ArrowRight, Info, Package, Box, Square } from 'lucide-react';
+import { Package, Box, Square } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDragAndDropStockV3 } from '../../hooks/useDragAndDropStockV3';
 import { PedidoCardCompacto } from './PedidoCardCompacto';
@@ -14,7 +14,6 @@ export const UsoEstoqueTabV3 = () => {
     pedidosIniciais,
     hierarquiaCache,
     setHierarquiaCache,
-    stockItems,
     selectedPedidoId,
     isLoading,
     pendingOperations,
@@ -26,11 +25,9 @@ export const UsoEstoqueTabV3 = () => {
     clearPendingOperations,
     confirmStockUsage,
     getPedidoSelecionado,
-    parseAssemblyInstanceId,
     getQuantidadeAtendidaTotal,
-    getPendingOperationsForNode,
-    enrichNodeWithJourney
-  } = useDragAndDropStockV3();
+    getPendingOperationsForNode
+  } = useDragAndDropStockV3({ showAllStatuses: false });
 
   const [draggingItem, setDraggingItem] = useState<any>(null);
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
@@ -40,7 +37,7 @@ export const UsoEstoqueTabV3 = () => {
   const [showCascadePreview, setShowCascadePreview] = useState(false);
   const [cascadeScope, setCascadeScope] = useState<ProductHierarchyNode[]>([]);
   const [isConfirming, setIsConfirming] = useState(false);
-  const [showJourneyDetails, setShowJourneyDetails] = useState<string | null>(null);
+  const [showOnlyNonAttended, setShowOnlyNonAttended] = useState(false);
 
   const handleDragStart = (item: any) => setDraggingItem(item);
   const handleDragEnd = () => { setDraggingItem(null); setHoverNodeId(null); setShowCascadePreview(false); };
@@ -68,7 +65,6 @@ export const UsoEstoqueTabV3 = () => {
 
   const handleNodeClick = (node: ProductHierarchyNode) => {
     setSelectedNodeId(node.id);
-    setShowJourneyDetails(node.assemblyInstanceId || null);
     
     // Dados já estão pré-populados pela agregação durante construção da hierarquia
     // Não é necessário enriquecimento posterior
@@ -77,14 +73,14 @@ export const UsoEstoqueTabV3 = () => {
   const pedidosOrdenados = useMemo(() => 
     [...pedidosIniciais]
       .filter(pedido => {
-        if (searchTerm && !pedido.numero.toString().toLowerCase().includes(searchTerm.toLowerCase())) return false;
+        if (searchTerm && !(pedido.numero?.toString() || '').toLowerCase().includes(searchTerm.toLowerCase())) return false;
         if (filterStatus !== 'todos' && pedido.status !== filterStatus) return false;
         return true;
       })
       .sort((a, b) => (a.numero || 0) - (b.numero || 0))
   , [pedidosIniciais, searchTerm, filterStatus]);
 
-  const pedidoSelecionado = getPedidoSelecionado();
+  const pedidoSelecionado = getPedidoSelecionado;
   const stockFiltrado = getStockForSelectedPedido();
 
   // Usar hierarquia do cache em vez de pedidoSelecionado.hierarquia (que está vazio)
@@ -130,7 +126,6 @@ export const UsoEstoqueTabV3 = () => {
       if (result.success) {
         toast.success(`Confirmado: ${result.message}`);
         setSelectedNodeId(null);
-        setShowJourneyDetails(null);
       } else {
         toast.error(result.message);
       }
@@ -181,13 +176,40 @@ export const UsoEstoqueTabV3 = () => {
         isLoading={isConfirming}
       />
 
-      <div className="bg-white shadow rounded-lg p-4 flex space-x-4">
-        <input type="text" placeholder="Buscar pedido..." className="flex-1 p-2 border rounded" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-        <select className="p-2 border rounded" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+      <div className="bg-white shadow rounded-lg p-4 flex flex-wrap gap-4">
+        <input 
+          type="text" 
+          placeholder="Buscar pedido..." 
+          className="flex-1 min-w-[200px] p-2 border rounded" 
+          value={searchTerm} 
+          onChange={e => setSearchTerm(e.target.value)} 
+        />
+        <select 
+          className="p-2 border rounded" 
+          value={filterStatus} 
+          onChange={e => setFilterStatus(e.target.value)}
+        >
           <option value="todos">Todos</option>
           <option value="aguardando">Aguardando</option>
           <option value="em_producao">Produção</option>
         </select>
+        
+        {/* Filtros de atendimento */}
+        <div className="flex items-center space-x-4">
+          <label className="flex items-center space-x-2 p-2 border rounded cursor-pointer hover:bg-gray-50">
+            <input
+              type="checkbox"
+              checked={showOnlyNonAttended}
+              onChange={(e) => setShowOnlyNonAttended(e.target.checked)}
+              className="rounded"
+            />
+            <span className="text-sm">Apenas não atendidos</span>
+          </label>
+          
+          <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+            Status permitidos: aguardando, aguardando_montagem
+          </div>
+        </div>
       </div>
 
       {/* Cards de Pedidos Horizontais */}

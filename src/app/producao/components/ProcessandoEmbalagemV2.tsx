@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useState, useMemo } from 'react';
-import { Package, Play, CheckCircle, XCircle, Clock, Plus } from 'lucide-react';
-import { GrupoMontagem } from '../../types';
+import React, { useMemo } from 'react';
+import { Package } from 'lucide-react';
 import { useAssemblyGroups } from '../../hooks/useAssemblyGroups';
 import PackagingCardV2 from './packaging-v2/PackagingCardV2';
 

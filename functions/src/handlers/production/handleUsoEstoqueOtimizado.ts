@@ -48,6 +48,24 @@ async function criarLancamentosSaidaEstoque(
   }
 }
 
+// Função para buscar grupo de embalagem fora da transação
+async function buscarGrupoEmbalagemForaTransacao(
+  db: admin.firestore.Firestore,
+  pedidoId: string
+): Promise<admin.firestore.QueryDocumentSnapshot | null> {
+  const grupoEmbalagemSnapshot = await db.collection('gruposMontagem')
+    .where('pedidoId', '==', pedidoId)
+    .where('targetProductType', '==', 'produto_final')
+    .limit(1)
+    .get();
+
+  if (grupoEmbalagemSnapshot.empty) {
+    return null;
+  }
+
+  return grupoEmbalagemSnapshot.docs[0];
+}
+
 // Função para coletar referências de grupos de montagem (FASE 1: LEITURAS)
 async function coletarGruposMontagemParaLeitura(
   db: admin.firestore.Firestore,
@@ -405,7 +423,7 @@ async function aplicarModificacoesGruposProducao(
       logger.info(`Nova totalPartsQuantity (original): ${totalPartsQuantityOriginal} (anterior: ${grupo.totalPartsQuantity})`);
       logger.info(`TotalPartsQuantity (atendido): ${totalPartsQuantityAtendido}`);
       
-      // 3. CALCULAR PROPORÇÃO BASEADA EM ASSEMBLYINSTANCES
+      //3. CALCULAR PROPORÇÃO BASEADA EM ASSEMBLYINSTANCES
       // Contar total de assemblyInstances no grupo
       let totalAssemblyInstances = 0;
       let assemblyInstancesAtendidos = assemblyInstancesDoPayload.length;
@@ -632,7 +650,226 @@ function verificarGrupoCompletamenteAtendido(grupo: GrupoMontagem): boolean {
   return true;
 }
 
-// Função para processar payload antigo (compatibilidade)
+// Função para propagar atendimento para subitens
+function propagarAtendimentoParaSubitens(
+  produtoFinal: any, 
+  produtoConsumido: UsoEstoquePayload['produtosConsumidos'][0]
+): void {
+  logger.info(`Propagando atendimento para subitens: ${produtoConsumido.produtoTipo} ${produtoConsumido.produtoId} (${produtoConsumido.quantidade} unidades)`);
+  
+  // 1. Propagar para modelos diretos do kit
+  if (produtoFinal.modelos) {
+    for (const modelo of produtoFinal.modelos) {
+      if (produtoConsumido.produtoTipo === 'kit') {
+        // Kit atende todos os modelos
+        modelo.quantidadeAtendida = (modelo.quantidadeAtendida || 0) + produtoConsumido.quantidade;
+        logger.info(`Modelo ${modelo.modeloId} quantidadeAtendida atualizada para ${modelo.quantidadeAtendida}`);
+        
+        // Propagar para peças do modelo
+        if (modelo.pecas) {
+          for (const peca of modelo.pecas) {
+            peca.quantidadeAtendida = (peca.quantidadeAtendida || 0) + produtoConsumido.quantidade;
+            logger.info(`Peça ${peca.pecaId} (dentro do modelo) quantidadeAtendida atualizada para ${peca.quantidadeAtendida}`);
+          }
+        }
+      }
+      
+      // Verificar se o modelo específico está sendo atendido
+      if (produtoConsumido.produtoTipo === 'modelo' && 
+          produtoConsumido.produtoId === modelo.modeloId) {
+        // Modelo específico atende suas próprias peças
+        if (modelo.pecas) {
+          for (const peca of modelo.pecas) {
+            peca.quantidadeAtendida = (peca.quantidadeAtendida || 0) + produtoConsumido.quantidade;
+            logger.info(`Peça ${peca.pecaId} (modelo específico) quantidadeAtendida atualizada para ${peca.quantidadeAtendida}`);
+          }
+        }
+      }
+    }
+  }
+  
+  // 2. Propagar para peças diretas do kit
+  if (produtoFinal.pecas) {
+    for (const peca of produtoFinal.pecas) {
+      if (produtoConsumido.produtoTipo === 'kit' || 
+          (produtoConsumido.produtoTipo === 'peca' && 
+           produtoConsumido.produtoId === peca.pecaId)) {
+        // Kit ou peça específica atende a peça
+        peca.quantidadeAtendida = (peca.quantidadeAtendida || 0) + produtoConsumido.quantidade;
+        logger.info(`Peça ${peca.pecaId} (direta do kit) quantidadeAtendida atualizada para ${peca.quantidadeAtendida}`);
+      }
+    }
+  }
+}
+
+// Função para mapear produtos consumidos para produtos finais necessários
+function mapearConsumoParaProdutosFinais(
+  produtosFinaisNecessarios: any[],
+  produtosConsumidos: UsoEstoquePayload['produtosConsumidos']
+): any[] {
+  if (!produtosFinaisNecessarios || produtosFinaisNecessarios.length === 0) {
+    return produtosFinaisNecessarios;
+  }
+
+  return produtosFinaisNecessarios.map(produtoFinal => {
+    const updatedProdutoFinal = { ...produtoFinal };
+    
+    // Inicializar atendimentoDetalhado se não existir
+    if (!updatedProdutoFinal.atendimentoDetalhado) {
+      updatedProdutoFinal.atendimentoDetalhado = [];
+    }
+    
+    // Para cada produto consumido, verificar se corresponde a este produto final
+    produtosConsumidos.forEach(consumido => {
+      // Lógica hierárquica: verificar se o produto consumido é parte do produto final
+      if (verificarPertenceAoProdutoFinal(consumido, produtoFinal)) {
+        const origem = `estoque_${consumido.produtoTipo}` as 'estoque_kit' | 'estoque_modelo' | 'estoque_peca';
+        const timestamp = admin.firestore.Timestamp.now();
+        
+        // Verificar se já existe atendimento desta origem
+        const atendimentoExistenteIndex = updatedProdutoFinal.atendimentoDetalhado?.findIndex(
+          (a: any) => a.origem === origem
+        ) ?? -1;
+        
+        if (atendimentoExistenteIndex >= 0) {
+          // Atualizar quantidade existente
+          const atendimentoExistente = updatedProdutoFinal.atendimentoDetalhado![atendimentoExistenteIndex];
+          updatedProdutoFinal.atendimentoDetalhado![atendimentoExistenteIndex] = {
+            ...atendimentoExistente,
+            quantidade: atendimentoExistente.quantidade + consumido.quantidade,
+            timestamp: timestamp
+          };
+        } else {
+          // Adicionar novo atendimento
+          updatedProdutoFinal.atendimentoDetalhado?.push({
+            origem: origem,
+            quantidade: consumido.quantidade,
+            timestamp: timestamp
+          });
+        }
+        
+        // Atualizar quantidadeAtendida do produto final
+        updatedProdutoFinal.quantidadeAtendida = (updatedProdutoFinal.quantidadeAtendida || 0) + consumido.quantidade;
+        
+        // NOVO: Propagar atendimento para subitens
+        propagarAtendimentoParaSubitens(updatedProdutoFinal, consumido);
+      }
+    });
+    
+    return updatedProdutoFinal;
+  });
+}
+
+// Função para verificar se um produto consumido pertence a um produto final
+function verificarPertenceAoProdutoFinal(
+  produtoConsumido: UsoEstoquePayload['produtosConsumidos'][0],
+  produtoFinal: any
+): boolean {
+  // Caso direto: o produto consumido é o próprio produto final
+  if (produtoConsumido.produtoId === produtoFinal.produtoId && 
+      produtoConsumido.produtoTipo === produtoFinal.tipo) {
+    return true;
+  }
+  
+  // Caso hierárquico: verificar se o produto consumido está na estrutura do produto final
+  if (produtoFinal.tipo === 'kit') {
+    // Verificar em modelos do kit
+    if (produtoFinal.modelos) {
+      for (const modelo of produtoFinal.modelos) {
+        if (produtoConsumido.produtoId === modelo.modeloId && 
+            produtoConsumido.produtoTipo === 'modelo') {
+          return true;
+        }
+        
+        // Verificar em peças do modelo
+        if (modelo.pecas) {
+          for (const peca of modelo.pecas) {
+            if (produtoConsumido.produtoId === peca.pecaId && 
+                produtoConsumido.produtoTipo === 'peca') {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    
+    // Verificar em peças diretas do kit
+    if (produtoFinal.pecas) {
+      for (const peca of produtoFinal.pecas) {
+        if (produtoConsumido.produtoId === peca.pecaId && 
+            produtoConsumido.produtoTipo === 'peca') {
+          return true;
+        }
+      }
+    }
+  } else if (produtoFinal.tipo === 'modelo') {
+    // Verificar em peças do modelo
+    if (produtoFinal.pecas) {
+      for (const peca of produtoFinal.pecas) {
+        if (produtoConsumido.produtoId === peca.pecaId && 
+            produtoConsumido.produtoTipo === 'peca') {
+          return true;
+        }
+      }
+    }
+  }
+  
+  return false;
+}
+
+// Função para atualizar grupo de embalagem (produto_final)
+async function atualizarGrupoEmbalagem(
+  transaction: admin.firestore.Transaction,
+  db: admin.firestore.Firestore,
+  pedidoId: string,
+  produtosConsumidos: UsoEstoquePayload['produtosConsumidos'],
+  grupoEmbalagemDoc?: admin.firestore.QueryDocumentSnapshot
+) {
+  logger.info(`Atualizando grupo de embalagem para pedido: ${pedidoId}`);
+  
+  // 1. Usar o grupo de embalagem fornecido ou retornar se não existir
+  if (!grupoEmbalagemDoc) {
+    logger.warn(`Grupo de embalagem não fornecido`);
+    return;
+  }
+
+  const grupoEmbalagem = grupoEmbalagemDoc.data() as GrupoMontagem;
+  
+  logger.info(`Grupo de embalagem encontrado: ${grupoEmbalagemDoc.id}`);
+  logger.info(`Produtos finais necessários: ${grupoEmbalagem.produtosFinaisNecessarios?.length || 0}`);
+  logger.info(`Produtos consumidos: ${produtosConsumidos.length}`);
+
+  // 2. Mapear produtos consumidos para produtos finais
+  const produtosFinaisAtualizados = mapearConsumoParaProdutosFinais(
+    grupoEmbalagem.produtosFinaisNecessarios || [],
+    produtosConsumidos
+  );
+
+  // 3. Verificar se está completo
+  const todosProdutosAtendidos = produtosFinaisAtualizados.every(produto => {
+    const totalAtendido = produto.atendimentoDetalhado?.reduce(
+      (sum: number, item: any) => sum + item.quantidade, 0
+    ) || 0;
+    return totalAtendido >= produto.quantidade;
+  });
+
+  // 4. Preparar atualização do grupo
+  const updatedGrupo: Partial<GrupoMontagem> = {
+    ...grupoEmbalagem,
+    produtosFinaisNecessarios: produtosFinaisAtualizados,
+    status: todosProdutosAtendidos ? 'produzido_aguardando_embalagem' : 'em_montagem'
+  };
+
+  // 5. Atualizar grupo no banco
+  transaction.update(grupoEmbalagemDoc.ref, updatedGrupo);
+  
+  logger.info(`Grupo de embalagem ${grupoEmbalagemDoc.id} atualizado:`);
+  logger.info(`  - Status: ${updatedGrupo.status}`);
+  logger.info(`  - Produtos finais atualizados: ${produtosFinaisAtualizados.length}`);
+  logger.info(`  - Todos atendidos: ${todosProdutosAtendidos}`);
+}
+
+// Função para processar payload antigo (compatibilidade) - SIMPLIFICADA
 async function processarPayloadAntigo(
   transaction: admin.firestore.Transaction,
   db: admin.firestore.Firestore,
@@ -674,15 +911,6 @@ async function processarPayloadAntigo(
       
       // Atualizar atendimento detalhado - usar Timestamp.now() em vez de FieldValue.serverTimestamp()
       const timestamp = admin.firestore.Timestamp.now();
-      let origem: any;
-      
-      if (produtoTipo === 'peca') {
-        origem = 'estoque_peca' as const;
-      } else if (produtoTipo === 'modelo') {
-        origem = 'estoque_modelo' as const;
-      } else {
-        origem = 'estoque_kit' as const;
-      }
       
       const updatedGrupo: Partial<GrupoMontagem> = { ...grupo };
       
@@ -690,7 +918,7 @@ async function processarPayloadAntigo(
         const updatedPecasNecessarias = grupo.pecasNecessarias.map(peca => {
           if (peca.pecaId === produtoId) {
             const novoAtendimento = {
-              origem: origem,
+              origem: 'estoque_peca' as const,
               quantidade: quantidade,
               timestamp: timestamp
             };
@@ -704,7 +932,7 @@ async function processarPayloadAntigo(
         const updatedModelosNecessarios = grupo.modelosNecessarios.map(modelo => {
           if (modelo.modeloId === produtoId) {
             const novoAtendimento = {
-              origem: origem,
+              origem: 'estoque_modelo' as const,
               quantidade: quantidade,
               timestamp: timestamp
             };
@@ -718,7 +946,7 @@ async function processarPayloadAntigo(
         const updatedProdutosFinais = grupo.produtosFinaisNecessarios.map(produto => {
           if (produto.produtoId === produtoId && produto.tipo === produtoTipo) {
             const novoAtendimento = {
-              origem: origem,
+              origem: 'estoque_kit' as const,
               quantidade: quantidade,
               timestamp: timestamp
             };
@@ -762,7 +990,7 @@ export const handleUsoEstoqueOtimizado = async (
   } = payload;
 
   logger.info(
-    `Processando uso_estoque otimizado para pedido: ${pedidoId}`
+    `Processando uso_estoque otimizado v2.1 (simplificado) para pedido: ${pedidoId}`
   );
 
   try {
@@ -822,24 +1050,27 @@ export const handleUsoEstoqueOtimizado = async (
         }
       } else {
         // Modo compatibilidade: processar payload antigo
-        logger.info('Usando modo compatibilidade (payload antigo)');
-        await processarPayloadAntigo(
-          transaction,
-          db,
-          pedidoId,
-          produtosConsumidos
-        );
+        logger.info('Usando modo compatibilidade');
+        
+        // Buscar todos os grupos de montagem do pedido
+        const gruposQuery = db.collection('gruposMontagem')
+          .where('pedidoId', '==', pedidoId);
+
+        const gruposSnapshot = await transaction.get(gruposQuery);
+
+        if (!gruposSnapshot.empty) {
+          // Processar payload antigo (simplificado)
+          await processarPayloadAntigo(transaction, db, pedidoId, produtosConsumidos);
+        }
       }
 
       // FASE 2: PROCESSAR LÓGICA (sem operações de banco)
       logger.info('FASE 2: Processando lógica (sem operações de banco)');
-      // Nesta fase, todas as leituras já foram feitas, podemos processar a lógica
-      // mas não fazemos mais operações de leitura/escrita no banco
 
       // FASE 3: APLICAR TODAS AS ESCRITAS
       logger.info('FASE 3: Aplicando todas as escritas');
       
-      // 3.1. Aplicar modificações em grupos de montagem
+      // 3.1. Aplicar modificações em grupos de montagem (modo otimizado)
       if (gruposMontagemParaAtualizar.length > 0) {
         await aplicarModificacoesGruposMontagem(transaction, gruposMontagemParaAtualizar);
       }
@@ -864,7 +1095,20 @@ export const handleUsoEstoqueOtimizado = async (
         pedidoId
       );
 
-      // 3.4. Atualizar status do lançamento
+      // 3.4. Atualizar grupo de embalagem (produto_final)
+      // Buscar grupo de embalagem fora da transação
+      const grupoEmbalagemDoc = await buscarGrupoEmbalagemForaTransacao(db, pedidoId);
+      if (grupoEmbalagemDoc) {
+        await atualizarGrupoEmbalagem(
+          transaction,
+          db,
+          pedidoId,
+          produtosConsumidos,
+          grupoEmbalagemDoc
+        );
+      }
+
+      //3.5. Atualizar status do lançamento
       transaction.update(snapshot.ref, {
         status: 'processado',
         processadoEm: admin.firestore.FieldValue.serverTimestamp()
