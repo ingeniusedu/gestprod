@@ -54,14 +54,14 @@ export async function processLancamentoProdutoUtil(event: any) {
 
             if (hasLocais) {
                 for (const local of locais) {
-                    if (!local.localId || !local.quantidade || local.quantidade <= 0) {
+                    if (!local.recipienteId || !local.quantidade || local.quantidade <= 0) {
                         functions.logger.warn(`[${lancamentoId}] Skipping invalid local entry:`, local);
                         continue;
                     }
 
                     const quantidadeMovimentada = tipoMovimento === 'saida' ? -local.quantidade : local.quantidade;
-                    const divisaoString = local.divisao ? `${local.divisao.h}_${local.divisao.v}` : "default";
-                    const posicaoId = `${local.localId}_${divisaoString}`;
+                    const divisaoString = local.divisao ? `${local.divisao.h}_${local.divisao.v}` : '';
+                    const posicaoId = local.divisao ? `${local.localId}_${divisaoString}` : local.localId;
 
                     let existingPosicaoIndex = currentPosicoesEstoque.findIndex(
                         (pos) => pos.localId === local.localId &&
@@ -123,3 +123,4 @@ export async function processLancamentoProdutoUtil(event: any) {
         functions.logger.error(`[${lancamentoId}] Transaction failed for product ${produtoId}:`, error);
     }
 }
+// Force redeploy

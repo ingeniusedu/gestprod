@@ -79,7 +79,7 @@ export async function processLancamentosServico(event: any) {
         // 4. Criar evento para o array
         const evento: ServicoEvento = {
             id: lancamentoId,
-            origem: lancamento.origem,
+            origem: lancamento.origem === 'producao' ? 'produção' : lancamento.origem,
             pedidoId: payload.pedidoId || null,
             optimizedGroupId: serviceType === 'impressao_3d' 
                 ? (payload as Impressao3DPayload).optimizedGroupId 

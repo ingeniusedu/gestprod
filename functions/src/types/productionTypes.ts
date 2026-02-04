@@ -257,6 +257,8 @@ export interface UsoEstoquePayload {
         produtoId: string;
         produtoTipo: 'kit' | 'modelo' | 'peca' | 'parte';
         posicaoEstoqueId: string;
+        localId: string;
+        recipienteId: string;
         quantidade: number;
     }>;
     // NOVOS CAMPOS: Grupos afetados mapeados pelo frontend
@@ -692,7 +694,7 @@ export interface ServicoMensal {
 
 export interface ServicoEvento {
     id: string;
-    origem: "pedido" | "producao" | "prototipagem" | "pessoal" | "outro";
+    origem: "pedido" | "produção" | "prototipagem" | "pessoal" | "outro";
     pedidoId?: string | null;
     optimizedGroupId?: string | null;
     assemblyGroup?: string | null;

@@ -118,10 +118,11 @@ export async function handleCriacaoPedido(event: { data?: DocumentSnapshot }) {
 
             // Processar produtos do pedido para gerar assemblyInstances
             for (const produto of produtos) {
-                // Para produtos de nível superior (kits, modelos ou peças diretas)
-                for (let i = 0; i < produto.quantidade; i++) {
-                    const assemblyInstanceId = `${pedidoId}-${produto.produtoId}-${i + 1}`;
-                    allAssemblyInstances.push({
+                // Para cada unidade do produto, criar uma árvore completa de instâncias
+                for (let unitIndex = 0; unitIndex < produto.quantidade; unitIndex++) {
+                    // Criar instância do produto principal (nível 0)
+                    const assemblyInstanceId = `${pedidoId}-${produto.produtoId}-${unitIndex + 1}`;
+                    const mainInstance = {
                         assemblyInstanceId,
                         quantidadeRequerida: 1,
                         atendimentoDetalhado: [],
@@ -129,24 +130,17 @@ export async function handleCriacaoPedido(event: { data?: DocumentSnapshot }) {
                         parentModeloId: null,
                         parentKitId: null,
                         targetProductId: produto.produtoId,
-                        targetProductType: produto.tipo,
-                    });
-                }
+                        targetProductType: produto.tipo as 'kit' | 'modelo' | 'peca',
+                    };
+                    allAssemblyInstances.push(mainInstance);
 
-                if (produto.tipo === 'kit') {
-                    // NEW: Handle direct pieces of the kit
-                    if (produto.pecasComponentes) {
-                        const parentKitInstances = allAssemblyInstances.filter(ai =>
-                            ai.targetProductId === produto.produtoId &&
-                            ai.targetProductType === 'kit' && // Corrected type check
-                            ai.parentKitId === null &&
-                            ai.parentModeloId === null &&
-                            ai.parentPecaId === null
-                        );
-                        for (const kitInstance of parentKitInstances) {
+                    // Processar subitens baseados no tipo do produto
+                    if (produto.tipo === 'kit') {
+                        // Processar peças diretas do kit
+                        if (produto.pecasComponentes) {
                             for (const peca of produto.pecasComponentes) {
                                 for (let pecaInstanceIndex = 0; pecaInstanceIndex < peca.quantidade; pecaInstanceIndex++) {
-                                    const pecaAssemblyInstanceId = `${kitInstance.assemblyInstanceId}-${peca.id}-${pecaInstanceIndex + 1}`;
+                                    const pecaAssemblyInstanceId = `${assemblyInstanceId}-${peca.id}-${pecaInstanceIndex + 1}`;
                                     allAssemblyInstances.push({
                                         assemblyInstanceId: pecaAssemblyInstanceId,
                                         quantidadeRequerida: 1,
@@ -155,28 +149,19 @@ export async function handleCriacaoPedido(event: { data?: DocumentSnapshot }) {
                                         parentModeloId: null,
                                         parentKitId: produto.produtoId,
                                         targetProductId: peca.id,
-                                        targetProductType: 'peca',
+                                        targetProductType: 'peca' as const,
                                     });
                                 }
                             }
                         }
-                    }
 
-                    // Existing logic for models within kits
-                    if (produto.modelosComponentes) {
-                        for (const modelo of produto.modelosComponentes) {
-                            // Para cada instância do kit pai, crie instâncias para o modelo
-                            const parentKitInstances = allAssemblyInstances.filter(ai =>
-                                ai.targetProductId === produto.produtoId &&
-                                ai.targetProductType === 'kit' && // Corrected type check
-                                ai.parentKitId === null &&
-                                ai.parentModeloId === null &&
-                                ai.parentPecaId === null
-                            );
-                            for (const kitInstance of parentKitInstances) {
+                        // Processar modelos dentro do kit
+                        if (produto.modelosComponentes) {
+                            for (const modelo of produto.modelosComponentes) {
+                                // Para cada unidade do modelo dentro desta instância do kit
                                 for (let modeloInstanceIndex = 0; modeloInstanceIndex < modelo.quantidade; modeloInstanceIndex++) {
-                                    const modeloAssemblyInstanceId = `${kitInstance.assemblyInstanceId}-${modelo.produtoId}-${modeloInstanceIndex + 1}`;
-                                    allAssemblyInstances.push({
+                                    const modeloAssemblyInstanceId = `${assemblyInstanceId}-${modelo.produtoId}-${modeloInstanceIndex + 1}`;
+                                    const modeloInstance = {
                                         assemblyInstanceId: modeloAssemblyInstanceId,
                                         quantidadeRequerida: 1,
                                         atendimentoDetalhado: [],
@@ -184,49 +169,36 @@ export async function handleCriacaoPedido(event: { data?: DocumentSnapshot }) {
                                         parentModeloId: null,
                                         parentKitId: produto.produtoId,
                                         targetProductId: modelo.produtoId,
-                                        targetProductType: 'modelo',
-                                    });
-                                }
-                            }
+                                        targetProductType: 'modelo' as const,
+                                    };
+                                    allAssemblyInstances.push(modeloInstance);
 
-                            if (modelo.pecasComponentes) {
-                                for (const peca of modelo.pecasComponentes) {
-                                    // Para cada instância do modelo pai (dentro do kit), crie instâncias para a peça
-                                    const parentModeloInstances = allAssemblyInstances.filter(ai =>
-                                        ai.targetProductId === modelo.produtoId &&
-                                        ai.targetProductType === 'modelo' && // Corrected type check
-                                        ai.parentKitId === produto.produtoId
-                                    );
-                                    for (const modeloInstance of parentModeloInstances) {
-                                        for (let pecaInstanceIndex = 0; pecaInstanceIndex < peca.quantidade; pecaInstanceIndex++) {
-                                            const pecaAssemblyInstanceId = `${modeloInstance.assemblyInstanceId}-${peca.id}-${pecaInstanceIndex + 1}`;
-                                            allAssemblyInstances.push({
-                                                assemblyInstanceId: pecaAssemblyInstanceId,
-                                                quantidadeRequerida: 1,
-                                                atendimentoDetalhado: [],
-                                                parentPecaId: null,
-                                                parentModeloId: modelo.produtoId,
-                                                parentKitId: produto.produtoId,
-                                                targetProductId: peca.id,
-                                                targetProductType: 'peca',
-                                            });
+                                    // Processar peças dentro do modelo
+                                    if (modelo.pecasComponentes) {
+                                        for (const peca of modelo.pecasComponentes) {
+                                            for (let pecaInstanceIndex = 0; pecaInstanceIndex < peca.quantidade; pecaInstanceIndex++) {
+                                                const pecaAssemblyInstanceId = `${modeloAssemblyInstanceId}-${peca.id}-${pecaInstanceIndex + 1}`;
+                                                allAssemblyInstances.push({
+                                                    assemblyInstanceId: pecaAssemblyInstanceId,
+                                                    quantidadeRequerida: 1,
+                                                    atendimentoDetalhado: [],
+                                                    parentPecaId: null,
+                                                    parentModeloId: modelo.produtoId,
+                                                    parentKitId: produto.produtoId,
+                                                    targetProductId: peca.id,
+                                                    targetProductType: 'peca' as const,
+                                                });
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                } else if (produto.tipo === 'modelo' && produto.pecasComponentes) {
-                    for (const peca of produto.pecasComponentes) {
-                        // Para cada instância do modelo pai, crie instâncias para a peça
-                        const parentModeloInstances = allAssemblyInstances.filter(ai =>
-                            ai.targetProductId === produto.produtoId &&
-                            ai.targetProductType === 'modelo' && // Corrected type check
-                            ai.parentKitId === null
-                        );
-                        for (const modeloInstance of parentModeloInstances) {
+                    } else if (produto.tipo === 'modelo' && produto.pecasComponentes) {
+                        // Processar peças dentro do modelo (quando o modelo é o produto principal)
+                        for (const peca of produto.pecasComponentes) {
                             for (let pecaInstanceIndex = 0; pecaInstanceIndex < peca.quantidade; pecaInstanceIndex++) {
-                                const pecaAssemblyInstanceId = `${modeloInstance.assemblyInstanceId}-${peca.id}-${pecaInstanceIndex + 1}`;
+                                const pecaAssemblyInstanceId = `${assemblyInstanceId}-${peca.id}-${pecaInstanceIndex + 1}`;
                                 allAssemblyInstances.push({
                                     assemblyInstanceId: pecaAssemblyInstanceId,
                                     quantidadeRequerida: 1,
@@ -235,11 +207,12 @@ export async function handleCriacaoPedido(event: { data?: DocumentSnapshot }) {
                                     parentModeloId: produto.produtoId,
                                     parentKitId: null,
                                     targetProductId: peca.id,
-                                    targetProductType: 'peca',
+                                    targetProductType: 'peca' as const,
                                 });
                             }
                         }
                     }
+                    // Para peças diretas (tipo 'peca'), não há subitens a processar
                 }
             }
 
